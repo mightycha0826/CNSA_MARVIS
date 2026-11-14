@@ -7,6 +7,7 @@
 // - 매 프레임 등록된 모듈의 update(frame)을 호출한다.
 
 import * as THREE from 'three';
+import { floorPose, originOffset, asTransform } from './room-frame.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { mode } from './mode.js';
 
@@ -28,6 +29,12 @@ const wantDepth = () => DEPTH_PARAM === '1' || (DEPTH_PARAM !== '0' && mode.curr
 // rest of the app keeps working in room coordinates. Untested on the headset: without the
 // parameter, or if the headset refuses it, the session stays on 'local-floor'.
 const WANT_UNBOUNDED = new URLSearchParams(location.search).get('space') === 'unbounded';
+// The room's coordinates are kept from session to session with a persistent anchor
+// (room-frame.js), so the stored field map and the waypoints fit again. ?anchor=0 turns it off;
+// ?anchor=new forgets the kept anchor and makes a new one where this session starts.
+// Untested on the headset: if a session starts with the room turned or shifted, use ?anchor=0.
+const ANCHOR_PARAM = new URLSearchParams(location.search).get('anchor');
+const ANCHOR_KEY = 'marswalk.roomAnchor'; // localStorage: { uuid, pose: { x, z, yaw } }
 /** The optional features to ask for. Decided when the session starts: it depends on the mode. */
 export const optionalFeatures = (depth = wantDepth()) => [
   'hand-tracking',
@@ -103,6 +110,7 @@ export function createXR({ container, button }) {
 
   const startCbs = new Set();
   const endCbs = new Set();
+  const realignCbs = new Set();
 
   /** 다른 모듈이 보는 XR 상태 (ctx.xr). */
   const xr = {
@@ -136,6 +144,17 @@ export function createXR({ container, button }) {
       endCbs.add(fn);
       return () => endCbs.delete(fn);
     },
+    /**
+     * Called when the app's coordinates change during a session: the reference space was
+     * shifted onto the room's kept coordinates (room-frame.js). Whatever a module holds in
+     * room coordinates from before is in the old ones.
+     */
+    onRealign(fn) {
+      realignCbs.add(fn);
+      return () => realignCbs.delete(fn);
+    },
+    /** How the room's kept coordinates stand: null (not tried), 'restored', 'created', or why not. */
+    roomAnchor: null,
     start: startSession,
     end: () => xr.session?.end(),
   };
@@ -151,24 +170,92 @@ export function createXR({ container, button }) {
   }
 
   // Swap the reference space for an unbounded one whose origin is the local-floor origin.
+  // Resolves when the swap is done (or was not possible).
   async function useUnboundedSpace(session) {
     try {
       const [unbounded, floor] = await Promise.all([
         session.requestReferenceSpace('unbounded'),
         session.requestReferenceSpace('local-floor'),
       ]);
-      session.requestAnimationFrame((_time, frame) => {
-        const pose = frame.getPose(floor, unbounded); // where the floor origin is, in unbounded coordinates
-        if (!pose || xr.session !== session) {
-          console.warn('[xr] unbounded space: no pose for the floor origin, staying on local-floor');
-          return;
-        }
-        renderer.xr.setReferenceSpace(unbounded.getOffsetReferenceSpace(pose.transform));
-        xr.space = 'unbounded';
-        console.info('[xr] reference space: unbounded, origin on the local floor');
+      await new Promise((resolve) => {
+        session.requestAnimationFrame((_time, frame) => {
+          const pose = frame.getPose(floor, unbounded); // where the floor origin is, in unbounded coordinates
+          if (!pose || xr.session !== session) {
+            console.warn('[xr] unbounded space: no pose for the floor origin, staying on local-floor');
+          } else {
+            renderer.xr.setReferenceSpace(unbounded.getOffsetReferenceSpace(pose.transform));
+            xr.space = 'unbounded';
+            console.info('[xr] reference space: unbounded, origin on the local floor');
+          }
+          resolve();
+        });
       });
     } catch (err) {
       console.warn('[xr] unbounded reference space refused, staying on local-floor:', err.name);
+    }
+  }
+
+  // ---- the room's coordinates, kept across sessions (room-frame.js) ----
+  /** The next frame of the session in which fn(frame) returns something, or null after `tries` frames. */
+  function frameWith(session, fn, tries = 180) {
+    return new Promise((resolve) => {
+      const step = (_time, frame) => {
+        if (xr.session !== session) return resolve(null);
+        let got = null;
+        try {
+          got = fn(frame);
+        } catch {
+          got = null;
+        }
+        if (got || --tries <= 0) resolve(got ?? null);
+        else session.requestAnimationFrame(step);
+      };
+      session.requestAnimationFrame(step);
+    });
+  }
+
+  /** Shift the reference space so that `anchor` lies where it was kept. `base`: the space the session gave. */
+  async function alignTo(session, base, anchor, kept) {
+    const pose = await frameWith(session, (frame) => frame.getPose(anchor.anchorSpace, base));
+    if (!pose) throw new Error('the kept anchor has no pose in this room');
+    const offset = originOffset(kept, floorPose(pose.transform));
+    const [position, orientation] = asTransform(offset);
+    renderer.xr.setReferenceSpace(base.getOffsetReferenceSpace(new XRRigidTransform(position, orientation)));
+    console.info('[xr] room coordinates restored from the kept anchor: origin shifted by', offset.x.toFixed(2), offset.z.toFixed(2), 'm, turned', ((offset.yaw * 180) / Math.PI).toFixed(1), 'deg');
+    callAll(realignCbs);
+  }
+
+  async function keepRoomCoordinates(session) {
+    if (ANCHOR_PARAM === '0') return (xr.roomAnchor = 'off (?anchor=0)');
+    try {
+      if (typeof session.restorePersistentAnchor !== 'function') return (xr.roomAnchor = 'not offered by this browser');
+      const base = renderer.xr.getReferenceSpace();
+      const known = new Set(session.persistentAnchors ?? []);
+      let saved = null;
+      try {
+        saved = ANCHOR_PARAM === 'new' ? null : JSON.parse(localStorage.getItem(ANCHOR_KEY));
+      } catch {
+        saved = null;
+      }
+      if (saved?.uuid && known.has(saved.uuid) && saved.pose) {
+        const anchor = await session.restorePersistentAnchor(saved.uuid);
+        await alignTo(session, base, anchor, saved.pose);
+        // A recentre moves the origin again: put it back on the anchor.
+        base.addEventListener('reset', () => alignTo(session, base, anchor, saved.pose).catch((err) => console.warn('[xr] room coordinates not restored after a recentre:', err.message)));
+        return (xr.roomAnchor = 'restored');
+      }
+      // None kept (or the headset no longer has it): this session's origin becomes the kept one.
+      // Anchors of this page that nothing points to any more are given back first (the headset keeps only a few).
+      for (const uuid of known) await session.deletePersistentAnchor?.(uuid).catch(() => {});
+      const anchor = await frameWith(session, (frame) => (frame.getViewerPose(base) ? frame.createAnchor?.(new XRRigidTransform(), base) : null));
+      if (!anchor) throw new Error('no anchor could be made');
+      const uuid = await (await anchor).requestPersistentHandle();
+      localStorage.setItem(ANCHOR_KEY, JSON.stringify({ uuid, pose: { x: 0, z: 0, yaw: 0 }, madeAt: new Date().toISOString() }));
+      console.info('[xr] room coordinates: an anchor is kept at this session\'s origin');
+      return (xr.roomAnchor = 'created');
+    } catch (err) {
+      console.warn('[xr] room coordinates are not kept across sessions:', err?.name, err?.message);
+      return (xr.roomAnchor = `failed: ${err?.message ?? err}`);
     }
   }
 
@@ -178,7 +265,9 @@ export function createXR({ container, button }) {
     await renderer.xr.setSession(session);
     xr.session = session;
     xr.space = 'local-floor';
-    if (WANT_UNBOUNDED) useUnboundedSpace(session);
+    xr.roomAnchor = null;
+    // First the space the session is to run in, then that space onto the room's kept coordinates.
+    (WANT_UNBOUNDED ? useUnboundedSpace(session) : Promise.resolve()).then(() => xr.session === session && keepRoomCoordinates(session));
     xr.enabledFeatures = readEnabledFeatures(session);
     console.info('[xr] 세션 시작. 허용된 기능:', xr.enabledFeatures ?? '(브라우저가 알려 주지 않음)');
     scene.background = null; // 패스스루가 보이게
