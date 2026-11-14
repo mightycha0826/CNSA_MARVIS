@@ -243,7 +243,10 @@ bus.on('layer:toggle', ({ id, visible }) => { /* ... */ });   // receive
 | `map:pick` | F | B | A place was picked on the palm map and its card is up: `{ cell: [col, row] }` on the Mars map, `{ room: [x, z] }` on the field map; `null` when the card closes. While it is up, a spoken "Navigate" means that place |
 | `field:target` | F | field (B) | The target of the field map: `{ point: [x, z], label? }` in room metres (a place picked on the map, or a waypoint); `{ point: null }` deletes it |
 | `waypoint:set` | F | field (B), D (map, nav) | A waypoint was set or renamed: `{ id, label, room: [x, z] }` on the field map, `{ id, label, cell: [col, row] }` on the Mars map |
-| `waypoint:remove` | F | field (B), D (map, nav) | `{ id }`: the waypoint was deleted |
+| `waypoint:remove` | F | field (B), D (map, nav) | `{ id }`: the waypoint was deleted, or (a field waypoint) put aside because the room's coordinates changed |
+| `waypoints:store` | F | B (to the Jetson) | The whole list, whenever it changes: `{ items: [{ id, label, cell } \| { id, label, room, runs }], count }`. `runs`: the scan runs whose room coordinates a field waypoint fits |
+| `waypoints:stored` | B (from the Jetson) | F | The list the hub kept, when the app connects |
+| `map:run` | A | F | The scan's run (one stretch in one set of room coordinates) and whether the stored map fits it: `{ run, trusted, storedRun }`. Sent when a run starts and when the stored map is found to line up; stored field waypoints of `storedRun` are then shown again |
 | `voice:dictate` | F | B (to the Jetson) | `{ on, id }`: the next thing said is to come back as text, not as a command (a waypoint's name) |
 | `voice:dictation` | B (from the Jetson) | F | `{ id, text }`: what was said. `text` is empty with `unavailable: true` when there is no hub |
 | `nav:waypoint` | F | D | A destination added or moved while running: `{ id: "pick", cell: [col, row], label }`. It joins `layerSet.waypoints`; request it with `nav:request` |
@@ -393,6 +396,7 @@ B sends the text to the hub, which treats it as speech. Without a hub, B emits `
 | (binary) | 16-bit PCM, mono | (B plays it) |
 | `tts.end` | `{}` | (B ends playback) |
 | `map.stored` | `{ run, cellSizeM, tileCells, tiles: [{ x, z, runs }], startedAt, savedAt, updates }` | `map:stored`. The answer to `map.request`: every tile of the newest run; nothing is sent when no map is stored |
+| `waypoints.stored` | `{ items, count, savedAt }` | `waypoints:stored`. The answer to `waypoints.request`: the marked places as last stored (an empty list when none were). The headset merges it into its own and then sends what the hub lacks |
 | `voice.dictation` | `{ "id": 3, "text": "Rock sample by the door." }` | `voice:dictation`. What this headset said after `voice.dictate`, sent to it alone |
 | `rescue.state` | `{ "active": true, "from", "at", "position", "acknowledged": false, "by": null }` | `rescue:state`. To the headset that sent the signal. The other headsets get `alert.raise` `{ "id": "crew-rescue", "level": "warn", "message": "Rescue signal from a crew member" }` and `alert.clear` when it is cancelled |
 
@@ -403,6 +407,8 @@ B sends the text to the hub, which treats it as speech. Without a hub, B emits `
 | `hello` | `{ "client": "quest", "mock": false }` | Right after connecting |
 | `mic.begin` | `{ "sampleRate": 16000, "stream": true }` | When the microphone starts, and again after every reconnect |
 | (binary) | 16-bit PCM, mono, 16 kHz | Continuously. The hub finds the utterances itself (voice activity detection) and ignores the microphone while it is speaking |
+| `waypoints.store` | `{ "items": [{ "id": "wp-x-1", "label": "Lander", "cell": [247, 357] }, { "id": "wp-x-2", "label": "Rock sample", "room": [1.5, -2], "runs": ["mb3k-0"] }], "count": 2 }` | The marked places, whenever the list changes: kept in `jetson/maps/waypoints.json` |
+| `waypoints.request` | `{}` | Right after connecting: asks for that list |
 | `voice.dictate` | `{ "on": true, "id": 3, "seconds": 12 }` | The next utterance of this headset is sent back to it as `voice.dictation { id, text }` and is not matched against the commands. `"on": false` withdraws the request; it lapses by itself after `seconds` (12 by default) |
 | `mic.end` | `{}` | Microphone stream ends. Without `"stream": true` in `mic.begin`, everything between `mic.begin` and `mic.end` is one utterance |
 | `voice.status` | `{ "mic": "on", "audio": "running", "inputRate": 48000, "level": 0.02 }` | When the microphone or audio state changes, and every 10 s. Shows in the hub log why a headset is silent |

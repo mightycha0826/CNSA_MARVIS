@@ -395,3 +395,40 @@ class NewPhrasesTest(unittest.TestCase):
                              ("cancel rescue", "sos.cancel"), ("mark waypoint", "nav.mark"), ("record", "waypoint.record"),
                              ("delete", "mark.delete"), ("confirm", "alert.ack")]:
             self.assertEqual(parse(text)["intent"], intent, text)
+
+
+class WaypointStoreTest(unittest.TestCase):
+    def test_the_list_comes_back_as_it_was_stored(self):
+        import tempfile
+        from pathlib import Path
+        from marswalk.maps import WaypointStore
+        with tempfile.TemporaryDirectory() as d:
+            store = WaypointStore(Path(d))
+            self.assertIsNone(store.stored())
+            store.save({"count": 3, "items": [
+                {"id": "wp-a-1", "label": "Rock sample", "room": [1.23456, -2], "runs": ["r-0", "r-1"]},
+                {"id": "wp-a-3", "label": "Lander", "cell": [247, 357]}]})
+            kept = WaypointStore(Path(d)).stored()
+            self.assertEqual(kept["count"], 3)
+            self.assertEqual(kept["items"], [
+                {"id": "wp-a-1", "label": "Rock sample", "room": [1.235, -2.0], "runs": ["r-0", "r-1"]},
+                {"id": "wp-a-3", "label": "Lander", "cell": [247.0, 357.0]}])
+            store.save({"items": []})                       # the last one was deleted
+            self.assertEqual(store.stored()["items"], [])
+
+    def test_junk_is_refused_and_leaves_the_file_alone(self):
+        import tempfile
+        from pathlib import Path
+        from marswalk.maps import WaypointStore
+        with tempfile.TemporaryDirectory() as d:
+            store = WaypointStore(Path(d))
+            store.save({"items": [{"id": "w", "label": "kept", "cell": [1, 2]}]})
+            for bad in (None, {}, {"items": "x"}, {"items": [{"label": "no id", "cell": [1, 2]}]},
+                        {"items": [{"id": "w", "room": [1, 2], "cell": [1, 2]}]},
+                        {"items": [{"id": "w", "room": [1, float("nan")]}]},
+                        {"items": [{"id": "w", "cell": [1]}]}):
+                with self.assertRaises(ValueError):
+                    store.save(bad)
+            self.assertEqual(store.stored()["items"][0]["label"], "kept")
+            long = store.save({"items": [{"id": "w", "label": "x" * 500, "room": [0, 0], "runs": [str(i) for i in range(30)]}]})
+            self.assertEqual((len(long["items"][0]["label"]), len(long["items"][0]["runs"])), (80, 8))

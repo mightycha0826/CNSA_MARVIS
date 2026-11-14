@@ -32,7 +32,7 @@ import * as THREE from 'three';
 import { MAP, rampColor } from './config.js';
 import { mapPoint, range, sampleHeight, terrainArrays } from './terrain.js';
 import { PALM, leftPalm, handOpen, makePalmState } from '../core/palm.js';
-import { makeBeam, updateBeam as aimBeam, makeCaption, writeCaption, placeCaption as putCaption, fadeBeyondCircle } from '../core/hologram.js';
+import { makeBeam, updateBeam as aimBeam, makeCaption, writeCaption, placeCaption as putCaption, fadeBeyondCircle, slideWithPalm } from '../core/hologram.js';
 import { createGridFrame, worldToCell, cellToWorld } from '../nav/coordinates.js';
 import { MARK, makeYou, makeTarget, makeWaypoint, makePin, setLabel, place } from '../core/markers.js';
 import { makeRibbon, GUIDE } from '../field/guide.js';
@@ -42,11 +42,13 @@ let activeLayer = null, request = 0, generation = 0, shownSince = null, controll
 let routePoints = [], routeBand = null, targetMarker = null, off = [], textures = new Map();
 // Waypoints the wearer marked (hud): id -> { id, label, cell }, and the marker of each on the map as it is built now.
 const marked = new Map(), markedMarkers = new Map();
-const lookDir = new THREE.Vector3(), toMap = new THREE.Vector3(), eyeAt = new THREE.Vector3();
-// How much of the map shows: `content` (the terrain and all that stands on it) is enlarged
-// `zoom` times and moved under the hologram's circle so that the wearer stays in its middle;
-// what leaves the circle fades out (core/hologram.js) or is hidden. zoom 1: the whole map.
-let content = null, zoom = 1, wantZoom = 1, me = null, laidFor = '', captionZoom = 1;
+const lookDir = new THREE.Vector3();
+// Which part of the map shows: `content` (the terrain and all that stands on it) is enlarged
+// `zoom` times (MAP.zoom in the headset, 1 on a PC: the whole map) and lies under the
+// hologram's circle with the wearer in its middle, slid by where the palm is held
+// (core/hologram.js: slideWithPalm). What leaves the circle fades out or is hidden.
+let content = null, zoom = 1, me = null, laidFor = '', captionZoom = 1;
+const slide = { x: 0, z: 0, fx: null, fz: null }; // metres on the map, in room axes
 const view = { zoom: { value: 1 }, shift: { value: new THREE.Vector2() } }; // for the fade of everything on the map
 const placed = new Map(); // marker -> { p: [x, y, z] its place on the surface, lift }
 let routeRaw = []; // the route's points on the surface, before lift
@@ -64,10 +66,13 @@ function lay(marker) {
 /** Enlarge and move the content for the zoom in use, and put everything on it in place again when that changed. */
 function applyZoom() {
   if (!content) return;
-  const f = Math.min(1, (zoom - 1) / 0.5); // from the whole map centred to the wearer centred, over the first half step of zoom
+  const f = Math.min(1, (zoom - 1) / 0.5); // the whole map (zoom 1) is centred on itself, an enlarged one on the wearer
   const at = me ?? [0, 0, 0];
+  // The middle of the circle stays over the map, however far the palm reaches.
+  const half = zoom * MAP.widthM / 2, halfDepth = half * (transform?.depth ?? 1) / (transform?.width ?? 1);
+  const hold = (v, limit) => Math.max(-limit, Math.min(limit, v));
   content.scale.setScalar(zoom);
-  content.position.set(-zoom * at[0] * f, (1 - zoom) * at[1] * f, -zoom * at[2] * f);
+  content.position.set(hold(-zoom * at[0] * f - slide.x, half), (1 - zoom) * at[1] * f, hold(-zoom * at[2] * f - slide.z, halfDepth));
   view.zoom.value = zoom; view.shift.value.set(content.position.x, content.position.z);
   const key = `${zoom.toFixed(3)}|${content.position.x.toFixed(4)}|${content.position.z.toFixed(4)}`;
   if (key === laidFor) return;
@@ -82,18 +87,11 @@ function layRoute() {
   routeBand.mesh.visible = routeRaw.length > 1;
   routeBand.set(routeRaw.length > 1 ? routeRaw.map(p => [p[0], p[1] + lift, p[2]]) : [], 0.0024 / zoom);
 }
-/** The zoom follows where the map is held: toward the middle of the view it shows all of it. */
-let forcedZoom = null; // PC testing: window.__map.zoom(3)
-function aimZoom(frame) {
-  if (forcedZoom != null) { zoom = wantZoom = forcedZoom; return; }
-  if (!frame.session || !root.visible) { wantZoom = 1; zoom = 1; return; }
-  ctx.camera.getWorldDirection(lookDir);
-  toMap.copy(root.position).sub(ctx.camera.getWorldPosition(eyeAt));
-  const off = THREE.MathUtils.radToDeg(toMap.angleTo(lookDir));
-  const [far, near] = MAP.zoomAtDeg;
-  wantZoom = 1 + (MAP.zoomMax - 1) * THREE.MathUtils.smoothstep(off, near, far);
-  zoom += (wantZoom - zoom) * (1 - Math.exp(-MAP.zoomRate * Math.min(0.1, frame.dt ?? 0.016)));
-  if (Math.abs(zoom - 1) < 0.004) zoom = 1;
+let forcedZoom = null, forcedSlide = false; // PC testing: window.__map.zoom(2), window.__map.slide(0.05, 0)
+/** The headset shows the map enlarged, the PC view whole. */
+function setZoom(frame) {
+  zoom = forcedZoom ?? (frame.session ? MAP.zoom : 1);
+  if (!frame.session && !forcedSlide) slide.x = slide.z = 0;
 }
 const position = new THREE.Vector3(), wristQuat = new THREE.Quaternion(), normal = new THREE.Vector3();
 const palmState = makePalmState();
@@ -118,7 +116,7 @@ function caption(note = '') {
   writeCaption(label, [
     `${data.layerSet.mock ? 'SYNTHETIC · ' : ''}${data.layerSet.site?.name ?? 'Terrain map'} · N ↑`,
     `${layer?.labelEn ?? layer?.label ?? 'Terrain'} · ${layer?.mission ?? ''} ${layer?.instrument ?? ''}`,
-    zoom > 1.02 ? `Showing ${Math.round(transform.width / zoom / 10) * 10} m of ${transform.width} m around you · hold it in the middle of your view for all` : `Map extent ${transform.width} × ${transform.depth} m · ${transform.cellSizeM} m/cell`,
+    zoom > 1.02 ? `Showing ${Math.round(transform.width / zoom / 10) * 10} m of ${transform.width} m · move your palm to slide the view` : `Map extent ${transform.width} × ${transform.depth} m · ${transform.cellSizeM} m/cell`,
     note || (activeLayer === 'thermal' ? 'Relative brightness · not temperature' : 'Teal: you · orange diamond: target · blue: waypoints · violet: route'),
     'Route distances use map metres. Display size does not affect planning.',
     layer?.credit ?? (data.layerSet.mock ? 'Synthetic example, not NASA observations' : 'Data sources: layerset.json'),
@@ -353,8 +351,8 @@ export function mapTargetCell() {
 
 export function init(context) {
   dispose(); ctx = context; root = new THREE.Group(); root.name = 'palm-map'; ctx.scene.add(root);
-  // PC testing without a headset: __map.zoom(3) shows the map three times larger around the wearer; __map.zoom(null) gives it back.
-  if (typeof window !== 'undefined') window.__map = { zoom: z => { forcedZoom = z; }, state: () => ({ zoom, shownM: transform ? transform.width / zoom : null, markers: [...placed.keys()].map(m => `${m.name}${m.visible ? '' : ' (hidden)'}`) }) };
+  // PC testing without a headset: __map.zoom(2) shows the map as the headset does, __map.slide(0.05, 0) slides the view as a palm held 5 cm (on the map) to the right would; null gives each back.
+  if (typeof window !== 'undefined') window.__map = { zoom: z => { forcedZoom = z; }, slide: (x, z) => { forcedSlide = x != null; slide.x = x ?? 0; slide.z = z ?? 0; }, state: () => ({ zoom, shownM: transform ? transform.width / zoom : null, markers: [...placed.keys()].map(m => `${m.name}${m.visible ? '' : ' (hidden)'}`) }) };
   root.position.set(0, 0.85, 0); root.scale.setScalar(MAP.desktopScale); root.rotation.x = MAP.desktopTiltRad;
   off.push(ctx.bus.on('layers:ready', load), ctx.bus.on('layer:toggle', ({ id, visible }) => { void selectLayer(id, visible); }),
     ctx.bus.on('nav:position', ({ point }) => setCurrent(point)), ctx.bus.on('nav:route', event => {
@@ -377,7 +375,7 @@ export function init(context) {
   }));
 }
 export function update(frame) {
-  if (root && data) { aimZoom(frame); applyZoom(); }
+  if (root && data) { setZoom(frame); applyZoom(); }
   tickMarkers();
   if (root && data && !frame.session) placeCaption(); // PC view
   if (!root || !data || !arrays || !frame.session) return;
@@ -399,7 +397,7 @@ export function update(frame) {
     if (shownSince === null) shownSince = time;
     if (time - shownSince < MAP.holdMs) { root.visible = false; return; }
     // Float above and a little in front of the palm instead of sitting on the wrist.
-    if (leftPalm(frame, ctx.camera, palmState)) position.copy(palmState.anchor);
+    if (leftPalm(frame, ctx.camera, palmState)) { position.copy(palmState.anchor); slideWithPalm(slide, palmState.palm, ctx.camera, dt); }
     else { const p = wrist.transform.position; position.set(p.x, p.y + 0.06, p.z); }
     if (!beam) { beam = makeBeam(); root.add(beam); }
   } else {

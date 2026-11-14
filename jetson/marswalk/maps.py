@@ -212,3 +212,63 @@ class MapStore:
                 old.unlink()
         except OSError:
             pass
+
+
+class WaypointStore:
+    """The places the wearer marked (web/src/hud/index.js), kept in one file beside the maps.
+
+    The headset sends its whole list whenever it changes (`waypoints.store`) and asks for it
+    when it connects (`waypoints.request`). A waypoint of the Mars map is a cell of the data
+    and fits in any session. One of the field map is a place in room coordinates: it carries
+    the runs (maps.py: a run is one stretch in one set of room coordinates) it is known to
+    fit, and the headset shows it again only once its scan has found itself in one of them.
+    """
+    MAX_ITEMS = 200
+    MAX_LABEL = 80
+    MAX_RUNS = 8
+
+    def __init__(self, directory: Path):
+        self.path = Path(directory) / "waypoints.json"
+
+    @classmethod
+    def clean(cls, payload) -> dict:
+        """The list as it is stored. Raises ValueError when it is not a list of waypoints."""
+        items = payload.get("items") if isinstance(payload, dict) else None
+        if not isinstance(items, list) or len(items) > cls.MAX_ITEMS:
+            raise ValueError("items: a list of at most %d waypoints expected" % cls.MAX_ITEMS)
+
+        def pair(v):
+            ok = (isinstance(v, list) and len(v) == 2
+                  and all(isinstance(n, (int, float)) and not isinstance(n, bool) and n == n and abs(n) < 1e7 for n in v))
+            return [round(float(v[0]), 3), round(float(v[1]), 3)] if ok else None
+
+        out = []
+        for it in items:
+            if not isinstance(it, dict) or not isinstance(it.get("id"), str) or not it["id"]:
+                raise ValueError("every waypoint needs an id")
+            room, cell = pair(it.get("room")), pair(it.get("cell"))
+            if (room is None) == (cell is None):
+                raise ValueError("a waypoint has either room [x, z] or cell [col, row]")
+            w = {"id": it["id"][:40], "label": str(it.get("label") or "")[:cls.MAX_LABEL]}
+            if room is not None:
+                w["room"] = room
+                w["runs"] = [str(r)[:60] for r in (it.get("runs") or []) if isinstance(r, str)][-cls.MAX_RUNS:]
+            else:
+                w["cell"] = cell
+            out.append(w)
+        count = payload.get("count")
+        return {"items": out, "count": int(count) if isinstance(count, int) and 0 <= count < 10**6 else len(out)}
+
+    def save(self, payload) -> dict:
+        data = {**self.clean(payload), "savedAt": time.strftime("%Y-%m-%dT%H:%M:%S")}
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False))
+        tmp.replace(self.path)
+        return data
+
+    def stored(self) -> dict | None:
+        try:
+            return json.loads(self.path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return None

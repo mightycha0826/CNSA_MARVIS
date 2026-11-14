@@ -9,9 +9,10 @@
 //     a room crosses a visible part of the 2 km map; in field mode it is 1 : 1.
 //
 // In field mode (the second button on the start page)
-//   - The palm map shows the ground around the wearer, and how much of it depends on where
-//     the map is held: brought toward the middle of the view it shows more (FIELD.spanRangeM,
-//     up to 24 m across), held off to the side it shows less, larger. On it is only
+//   - The palm map shows FIELD.spanM of ground, 1 : 80. Which ground depends on where the
+//     palm is held: the map follows only part of the hand's movement, so moving the palm slides
+//     the view over the ground (core/hologram.js: slideWithPalm). Held where a palm is
+//     naturally held, the wearer is in the middle. On it is only
 //     what the headset has scanned (`hazard:update` from scan/): clear floor and structure.
 //     Ground the headset knows nothing about is left empty, with no frame around the map.
 //     (It used to show the Mars image there, which read as floor that had been seen.)
@@ -41,7 +42,7 @@
 import * as THREE from 'three';
 import { mode } from '../core/mode.js';
 import { makePalmState } from '../core/palm.js';
-import { makeBeam, makeCaption, writeCaption, placeCaption, floatOverPalm, fadeBeyondCircle } from '../core/hologram.js';
+import { makeBeam, makeCaption, writeCaption, placeCaption, floatOverPalm, fadeBeyondCircle, slideWithPalm } from '../core/hologram.js';
 import { MAP } from '../map/config.js';
 import { sampleHeight } from '../map/terrain.js';
 import { createGridFrame, cellToWorld, worldToCell } from '../nav/coordinates.js';
@@ -64,12 +65,8 @@ export const WALK = {
 };
 
 export const FIELD = {
-  spanM: 20, // the palm map shows spanM x spanM around the wearer (PC view, and until the map has been looked at)
-  // In the headset the range follows where the map is held: [off to the side, in the middle of
-  // the view] in metres across. More than 24 m would show nothing more: the scan's window is 25.6 m.
-  spanRangeM: [10, 24],
-  spanAtDeg: [34, 10], // the map's centre this far from the line of sight: the first range, the second range; between them it glides
-  spanRate: 5, // how fast the range follows (1/s)
+  spanM: 24, // the palm map shows spanM x spanM of ground (it was 20, on a map a fifth smaller: the scale is the same, 1 : 80)
+  panMaxM: 14, // the view can be slid this far from the wearer: beyond lies nothing the scan's window (25.6 m) holds
   mapM: MAP.widthM, // size of the palm map (m): the same as the Mars map
   mapPx: 512,
   segments: 128, // the map surface is a grid of this many quads per side, raised into a relief
@@ -102,8 +99,11 @@ const head = new THREE.Vector3();
 let heading = 0; // radians, 0 = facing -z (north on the map), clockwise positive
 const headStart = new THREE.Vector3();
 let haveHead = false;
-let wantSpan = FIELD.spanM; // the range the map should show, following where it is held
-let span = FIELD.spanM; // the range it was last drawn with: markers and picking go by this
+const span = FIELD.spanM; // metres of ground across the map
+const slide = { x: 0, z: 0, fx: null, fz: null }; // how far the palm has slid the view (core/hologram.js), metres on the map
+let viewAt = [0, 0]; // the place in the room that the middle of the map shows: the wearer, slid by the palm
+let drawnAt = [NaN, NaN]; // viewAt when the map was last drawn
+let drawnHead = [NaN, NaN]; // and where the wearer stood then (walking alone redraws at the usual pace)
 let target = null; // THREE.Vector3 on the floor, or null
 let targetLabel = ''; // its name, when it was set from a waypoint
 // Marked places: id -> { id, label, room: [x, z] } (field mode) or { id, label, cell } (Mars mode).
@@ -120,6 +120,7 @@ let lastEmitRoute = 0;
 let lastDraw = 0;
 let lastStatus = null;
 let simulated = null; // PC testing: { x, z, heading }
+let slideTest = false; // PC testing: __field.slide(x, z) holds the view slid
 
 const v = new THREE.Vector3();
 const dummy = new THREE.Object3D();
@@ -253,7 +254,7 @@ function drawPalmMap() {
   const { g, canvas, tex } = palmMap;
   const W = canvas.width;
   const k = W / span; // pixels per metre
-  const toPx = (x, z) => [(x - head.x) * k + W / 2, (z - head.z) * k + W / 2];
+  const toPx = (x, z) => [(x - viewAt[0]) * k + W / 2, (z - viewAt[1]) * k + W / 2];
   g.save();
   // Only what the headset has scanned is drawn. Ground it knows nothing about is left empty:
   // there used to be the Mars image there as a stand-in floor, which read as floor that had
@@ -306,7 +307,7 @@ function updateRelief() {
   const pos = surface.geometry.attributes.position;
   const col = surface.geometry.attributes.color;
   const terrain = !!(topo && frameT && anchorMap && layerSet?.grid);
-  palmMap.centre = [head.x, head.z]; // the place in the room that the middle of the map stands for
+  palmMap.centre = [viewAt[0], viewAt[1]]; // the place in the room that the middle of the map stands for
   // The ground is drawn relative to where the wearer stands: the map's centre is at height 0.
   const here = terrain ? terrainHeight(head.x, head.z) : NaN;
   const ground = (x, z) => {
@@ -314,16 +315,16 @@ function updateRelief() {
     return Number.isFinite(h) ? Math.max(-FIELD.reliefMaxM, Math.min(FIELD.reliefMaxM, h)) : 0;
   };
   for (let r = 0; r < side; r++) {
-    const z = head.z + (r / N - 0.5) * span;
+    const z = viewAt[1] + (r / N - 0.5) * span;
     for (let c = 0; c < side; c++) {
-      mask[r * side + c] = grid && structureNear(head.x + (c / N - 0.5) * span, z, step / 2) ? 1 : 0;
+      mask[r * side + c] = grid && structureNear(viewAt[0] + (c / N - 0.5) * span, z, step / 2) ? 1 : 0;
     }
   }
   for (let r = 0; r < side; r++) {
-    const z = head.z + (r / N - 0.5) * span;
+    const z = viewAt[1] + (r / N - 0.5) * span;
     for (let c = 0; c < side; c++) {
       const i = r * side + c;
-      const base = Number.isFinite(here) ? ground(head.x + (c / N - 0.5) * span, z) : 0;
+      const base = Number.isFinite(here) ? ground(viewAt[0] + (c / N - 0.5) * span, z) : 0;
       pos.setY(i, (base + (mask[i] ? FIELD.structureM : 0)) * scale);
       const beside = !mask[i] && ((c > 0 && mask[i - 1]) || (c < N && mask[i + 1]) || (r > 0 && mask[i - side]) || (r < N && mask[i + side]));
       const shade = beside ? 0.45 : 1;
@@ -345,9 +346,9 @@ function writeFieldCaption() {
     note = !guiding ? `Target ${d} m · guidance off` : lastStatus === 'blocked' ? `Target ${d} m · no clear way through` : `Target ${d} m · violet: the way there`;
   }
   writeCaption(palmMap.caption, [
-    `${layerSet?.mock ? 'SYNTHETIC · ' : ''}Field map · ${Math.round(span)} m around you · N ↑`,
+    `${layerSet?.mock ? 'SYNTHETIC · ' : ''}Field map · ${span} m across · N ↑`,
     source,
-    `Map extent ${Math.round(span)} × ${Math.round(span)} m · ${grid ? grid.cellSizeM : 0.1} m/cell · hold it in the middle of your view to see farther`,
+    `Map extent ${span} × ${span} m · ${grid ? grid.cellSizeM : 0.1} m/cell · move your palm to slide the view`,
     note,
     `Teal: you · orange diamond: target · blue: waypoints${waypoints.size ? ` (${[...waypoints.values()].filter((w) => w.room).length})` : ''} · orange ground: structure or a drop`,
     'Only scanned ground is drawn; the rest is empty until the headset has seen it',
@@ -387,20 +388,6 @@ function setTargetAt(x, z, label = '') {
 
 /** How many metres across the field map shows right now (hud: distances on the map). */
 export const fieldSpan = () => span;
-
-// The range follows where the map is held: toward the middle of the view it widens.
-const lookAt_ = new THREE.Vector3();
-const toMap = new THREE.Vector3();
-function aimSpan(frame) {
-  if (!frame.session || !palmMap.root.visible) return;
-  ctx.camera.getWorldDirection(lookAt_);
-  toMap.copy(palmMap.root.position).sub(ctx.camera.getWorldPosition(v));
-  const off = THREE.MathUtils.radToDeg(toMap.angleTo(lookAt_));
-  const [far, near] = FIELD.spanAtDeg;
-  const t = THREE.MathUtils.smoothstep(off, near, far); // 0 in the middle of the view, 1 off to the side
-  const goal = FIELD.spanRangeM[1] + (FIELD.spanRangeM[0] - FIELD.spanRangeM[1]) * t;
-  wantSpan += (goal - wantSpan) * (1 - Math.exp(-FIELD.spanRate * Math.min(0.1, frame.dt ?? 0.016)));
-}
 
 /** Where the wearer stands in the room, [x, z], or null while the headset is not tracked (hud: "Mark waypoint"). */
 export function fieldHere() {
@@ -694,7 +681,7 @@ function placePalmMap(frame) {
   if (!frame.session) {
     // PC view: where the Mars map stands in Mars mode, at the same size and tilt.
     floatState.shownSince = null;
-    wantSpan = FIELD.spanM; // the PC view has no hand to move the map with
+    if (!slideTest) slide.x = slide.z = 0; // the PC view has no hand to move the map with
     beam.visible = false;
     root.visible = true;
     root.position.set(0, 0.85, 0);
@@ -704,7 +691,8 @@ function placePalmMap(frame) {
   } else {
     // Headset: over the left palm, exactly as the Mars map floats (core/hologram.js).
     root.scale.setScalar(1);
-    floatOverPalm(root, beam, frame, ctx.camera, palmState, floatState, { holdMs: MAP.holdMs, followRate: MAP.followRate, widthM: FIELD.mapM });
+    const shown = floatOverPalm(root, beam, frame, ctx.camera, palmState, floatState, { holdMs: MAP.holdMs, followRate: MAP.followRate, widthM: FIELD.mapM });
+    if (shown) slideWithPalm(slide, palmState.palm, ctx.camera, frame.dt);
   }
   placeCaption(caption, root, ctx.camera, FIELD.mapM);
 }
@@ -765,6 +753,13 @@ export function init(context) {
     marsRoute = null;
     marsScale = WALK.marsScale;
   });
+  // The reference space was shifted onto the room's kept coordinates (core/room-frame.js):
+  // where the wearer started and what was targeted are in the old ones.
+  ctx.xr.onRealign?.(() => {
+    haveHead = false;
+    clearTarget();
+    marsRoute = null;
+  });
   ctx.xr.onSessionStart(() => {
     haveHead = false; // the room frame starts over with the session
     floatState.shownSince = null;
@@ -782,7 +777,13 @@ export function init(context) {
       simulated = { x, z, heading: THREE.MathUtils.degToRad(headingDeg) };
     },
     clear: clearTarget,
-    state: () => ({ via: route.via ?? [], spanM: span, mode: mode.current, head: [head.x, head.z], target: target && [target.x, target.z], targetLabel, waypoints: [...waypoints.values()], waypointsInRoom: fx.waypointsShown, guiding, status: lastStatus, route: route.points.length, distanceM: route.distanceM, arrows: fx.arrows, targetShown: fx.targetShown, marsScale, marsRoute: marsRoute && { targetId: marsRoute.targetId, distanceM: marsRoute.distanceM, points: marsRoute.points.length } }),
+    /** PC: slide the view as a palm held x, z metres (on the map) from its neutral place would; slide() gives it back. */
+    slide(x, z) {
+      slideTest = x != null;
+      slide.x = x ?? 0;
+      slide.z = z ?? 0;
+    },
+    state: () => ({ viewAt, via: route.via ?? [], spanM: span, mode: mode.current, head: [head.x, head.z], target: target && [target.x, target.z], targetLabel, waypoints: [...waypoints.values()], waypointsInRoom: fx.waypointsShown, guiding, status: lastStatus, route: route.points.length, distanceM: route.distanceM, arrows: fx.arrows, targetShown: fx.targetShown, marsScale, marsRoute: marsRoute && { targetId: marsRoute.targetId, distanceM: marsRoute.distanceM, points: marsRoute.points.length } }),
     /** The map as drawn: caption text, how many surface vertices stand on structure, the tallest point (m on the map). */
     map: () => {
       const y = palmMap.surface.geometry.attributes.position;
@@ -823,12 +824,17 @@ export function update(frame) {
 
   if (haveHead) guide(now);
   placePalmMap(frame);
-  aimSpan(frame);
-  // Drawn again five times a second, and sooner while the range is changing, so that glides.
-  const zooming = Math.abs(wantSpan - span) > 0.2;
-  if (palmMap.root.visible && now - lastDraw > (zooming ? 50 : FIELD.redrawMs)) {
+  // Where the palm is held slides the view over the ground (PC view: no hand, the wearer in the middle).
+  const perMapM = span / FIELD.mapM; // ground metres per metre on the map
+  const far = Math.hypot(slide.x, slide.z) * perMapM;
+  const hold = far > FIELD.panMaxM ? FIELD.panMaxM / far : 1;
+  viewAt = [head.x + slide.x * perMapM * hold, head.z + slide.z * perMapM * hold];
+  // Drawn again five times a second, and sooner while the view is being slid, so that glides.
+  const sliding = Math.hypot(viewAt[0] - drawnAt[0], viewAt[1] - drawnAt[1]) > span / 300 && Math.hypot(head.x - drawnHead[0], head.z - drawnHead[1]) < 0.05;
+  if (palmMap.root.visible && now - lastDraw > (sliding ? 40 : FIELD.redrawMs)) {
     lastDraw = now;
-    span = zooming ? wantSpan : span;
+    drawnAt = viewAt;
+    drawnHead = [head.x, head.z];
     drawPalmMap();
     updateRelief();
     writeFieldCaption();
