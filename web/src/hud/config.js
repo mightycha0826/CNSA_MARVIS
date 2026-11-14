@@ -49,6 +49,8 @@ export const HUD = {
     /** A tile fades in and out at this rate (1/s), growing from and shrinking to this size */
     fadeRate: 16,
     appearScale: 0.86,
+    flowScale: 0.3, // a tile on its way to or from the vitals hologram is this small at that end
+    flowMs: 700, // for this long after the hologram opened or closed its readings' tiles fly to it or from it
   },
   /** The alert card and the toast are centred this far from the middle of the view (deg,
    *  negative = left). 0 since the readings stand in columns on both sides. */

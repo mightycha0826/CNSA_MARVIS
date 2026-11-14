@@ -1,7 +1,7 @@
 // node --test src/hud/importance.test.js
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { IMPORTANCE as DEFAULTS, trend, importance, choose as pick } from './importance.js';
+import { whileVitalsOpen, IMPORTANCE as DEFAULTS, trend, importance, choose as pick } from './importance.js';
 
 // Two places and no threshold for the tests that are about ranking; the threshold has its own test.
 const IMPORTANCE = { ...DEFAULTS, slots: 2, showAbove: -Infinity };
@@ -67,4 +67,24 @@ test('only readings that matter enough are shown: the number on show changes', (
   assert.deepEqual(ids(pick([heart, radiation, { ...pressure, state: 'warn' }, air], [], K).ranked), ['pressure', 'heart', 'radiation'], 'out of range: it comes up');
   assert.deepEqual(ids(pick([heart, radiation, { ...pressure, state: 'warn' }, { ...air, state: 'warn' }], [], K).ranked).length, 3, 'never more than the places there are');
   assert.deepEqual(ids(pick([air], [], K).ranked), [], 'nothing that matters: nothing shown');
+});
+
+test('vitals open: what the hologram shows leaves the tiles, except what is critical or in focus; closed: all are candidates again', () => {
+  const metrics = [
+    { id: 'battery', pinned: true },
+    { id: 'o2', pinned: true, inVitals: true, state: '' },
+    { id: 'ambient', pinned: true, inVitals: true, state: 'warn', focus: true },
+    { id: 'heart', base: 35, inVitals: true, state: '' },
+    { id: 'body', base: 33, inVitals: true, state: 'crit' },
+    { id: 'pressure', base: 30, inVitals: true, state: 'warn' },
+    { id: 'radiation', base: 32, state: '' },
+  ];
+  assert.equal(whileVitalsOpen(metrics, false), metrics);
+  const open = whileVitalsOpen(metrics, true);
+  const shown = pick(open); // with the numbers the app uses (three places, shown from 31)
+  assert.deepEqual(shown.pinned.map((m) => m.id), ['battery', 'ambient']); // oxygen is on the hologram; the alarm in the middle stays
+  assert.deepEqual(shown.ranked.map((m) => m.id), ['body', 'radiation']); // critical stays; heart rate and the pressure warning are on the hologram
+  const closed = pick(metrics);
+  assert.deepEqual(closed.pinned.map((m) => m.id), ['battery', 'o2', 'ambient']);
+  assert.deepEqual(closed.ranked.map((m) => m.id), ['body', 'pressure', 'heart']); // by importance: critical, warning, then the rest
 });
