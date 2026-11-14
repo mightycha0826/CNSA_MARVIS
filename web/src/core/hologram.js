@@ -221,3 +221,30 @@ export function unfoldStep(st, wanted, dt, rate = 9) {
   const t = st.level;
   return t * t * (3 - 2 * t);
 }
+
+// ---- coming up ----
+// Everything a hand brings up comes up the same way: out of nothing, a little too large, and
+// back to its size, in about a third of a second. It is how the vitals unfold from the wrist
+// rings (hud/suit.js), and the maps, the menus and the cards over a hand use it too.
+
+/** A spring let go at 0 toward 1: quick, with one small overshoot (about 6 %), settled in a third of a second. */
+export const pop = (t) => (t <= 0 ? 0 : 1 - Math.exp(-16 * t) * Math.cos(18 * t));
+export const POP_S = 0.45; // after this long it is taken as settled
+
+/**
+ * The size something has as it comes up: 0.001 while it is not shown, then pop() from the
+ * moment it is, then 1. `st` keeps the state between frames: {}. `shown` may be last frame's
+ * visibility (the first frame is then drawn at next to nothing, and the pop starts with the next).
+ */
+export function popIn(st, shown, nowMs) {
+  if (shown && !st.was) st.since = nowMs;
+  st.was = !!shown;
+  if (!shown) return 0.001;
+  const t = (nowMs - st.since) / 1000;
+  return t >= POP_S ? 1 : Math.max(0.001, pop(t));
+}
+
+/** Scale an object by `size` as it comes up: its height follows a little behind its width, as with the vitals. */
+export function popScale(object, size, k) {
+  object.scale.set(size * k, size * k * k, size * k);
+}

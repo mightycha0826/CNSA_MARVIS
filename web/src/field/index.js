@@ -44,7 +44,7 @@
 import * as THREE from 'three';
 import { mode } from '../core/mode.js';
 import { makePalmState } from '../core/palm.js';
-import { makeBeam, makeCaption, writeCaption, placeCaption, floatOverPalm, fadeBeyondCircle, unfoldStep } from '../core/hologram.js';
+import { makeBeam, makeCaption, writeCaption, placeCaption, floatOverPalm, fadeBeyondCircle, unfoldStep, popIn, popScale } from '../core/hologram.js';
 import { knownBeyondWindow } from '../scan/index.js';
 import { MAP } from '../map/config.js';
 import { sampleHeight } from '../map/terrain.js';
@@ -115,6 +115,7 @@ let span = FIELD.spanM; // metres of ground across the map as it is drawn now
 let viewAt = [0, 0]; // the place in the room that the middle of the map shows: the wearer, or the middle of all known ground
 // Unfolding (a fist under the map): how far (0..1, eased), the size it has grown to, and the ground to fit.
 const unfold = { level: 0 };
+const comeUp = {}; // the pop the map comes up with (core/hologram.js)
 let unfolded = 0;
 let grown = 1;
 let known = null; // { cx, cz, span }: the middle and the size of all known ground, worked out when the map is redrawn
@@ -916,7 +917,8 @@ export function update(frame) {
   const full = Math.min(FIELD.unfoldMaxM / FIELD.mapM, (fit.span / FIELD.spanM) * FIELD.unfoldEnlarge);
   grown = 1 + (full - 1) * unfolded * (frame.session ? 1 : 0.35);
   fieldView.zoom.value = 1 - FIELD.unfoldFade * unfolded;
-  palmMap.root.scale.setScalar((frame.session ? 1 : MAP.desktopScale) * grown);
+  // Over a hand it comes up as everything a hand brings up does (core/hologram.js: popIn).
+  popScale(palmMap.root, (frame.session ? 1 : MAP.desktopScale) * grown, frame.session ? popIn(comeUp, palmMap.root.visible, now) : 1);
   // Drawn again five times a second, and sooner while it unfolds or folds, so that glides.
   if (palmMap.root.visible && now - lastDraw > (moving ? 40 : FIELD.redrawMs)) {
     lastDraw = now;

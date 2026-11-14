@@ -32,7 +32,7 @@ import * as THREE from 'three';
 import { MAP, rampColor } from './config.js';
 import { mapPoint, range, sampleHeight, terrainArrays } from './terrain.js';
 import { PALM, leftPalm, handOpen, makePalmState } from '../core/palm.js';
-import { makeBeam, updateBeam as aimBeam, makeCaption, writeCaption, placeCaption as putCaption, fadeBeyondCircle, unfoldStep } from '../core/hologram.js';
+import { makeBeam, updateBeam as aimBeam, makeCaption, writeCaption, placeCaption as putCaption, fadeBeyondCircle, unfoldStep, popIn, popScale } from '../core/hologram.js';
 import { createGridFrame, worldToCell, cellToWorld } from '../nav/coordinates.js';
 import { MARK, makeYou, makeTarget, makeWaypoint, makePin, setLabel, place } from '../core/markers.js';
 import { makeRibbon, GUIDE } from '../field/guide.js';
@@ -50,7 +50,7 @@ const lookDir = new THREE.Vector3();
 // whole map shows, at that same scale (only `grown` times larger), centred on itself: more
 // ground, not larger ground. Open the hand and it folds back.
 let content = null, zoom = 1, me = null, laidFor = '', captionZoom = 1, captionOpen = false;
-const unfold = { level: 0 };
+const unfold = { level: 0 }, comeUp = {};
 let unfolded = 0, grown = 1, fist = false, unfoldTest = null;
 const view = { zoom: { value: 1 }, shift: { value: new THREE.Vector2() } }; // for the fade of everything on the map
 const placed = new Map(); // marker -> { p: [x, y, z] its place on the surface, lift }
@@ -95,7 +95,8 @@ function setView(frame) {
   zoom = forcedZoom ?? (frame.session ? MAP.zoom : 1);
   unfolded = unfoldStep(unfold, unfoldTest ?? (!!frame.session && fist && root.visible), frame.dt);
   grown = 1 + (MAP.unfoldEnlarge - 1) * unfolded;
-  root.scale.setScalar((frame.session ? 1 : MAP.desktopScale) * grown);
+  // Over a hand it comes up as everything a hand brings up does (core/hologram.js: popIn).
+  popScale(root, (frame.session ? 1 : MAP.desktopScale) * grown, frame.session ? popIn(comeUp, root.visible, performance.now()) : 1);
 }
 const position = new THREE.Vector3(), wristQuat = new THREE.Quaternion(), normal = new THREE.Vector3();
 const palmState = makePalmState();

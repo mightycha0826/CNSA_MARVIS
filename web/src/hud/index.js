@@ -32,6 +32,7 @@ import { createPointer, tipDown } from './pointer.js';
 import { createSuit } from './suit.js';
 import { createRescue } from './rescue.js';
 import { handOpen } from '../core/palm.js';
+import { popIn } from '../core/hologram.js';
 import { walkableNear, reachableFrom } from '../core/waypoints.js';
 import { choose, importance, trend } from './importance.js';
 import { createDash } from './dash.js';
@@ -122,6 +123,7 @@ let naming = null;
 let dictations = 0;
 let lastMapPoint = null; // where the wearer is on the Mars map, in map metres (nav:position)
 let pPick = null;
+const pickPop = {}; // the pop the pick card comes up with (core/hologram.js)
 let pickHits = [];
 const pickTouch = { hoverId: null, pressedId: null, pressedUntil: 0 };
 const UP = new THREE.Vector3(0, 1, 0);
@@ -1073,7 +1075,9 @@ function followMenu(panel, st, wanted, held, scale, now, dt, { handSeen = false,
     st.shown = false; // quickly when the hand has turned away, slowly when it was only lost from view
   }
   panel.mesh.visible = st.shown;
-  panel.mesh.scale.setScalar(scale);
+  // A menu comes up over the hand as the vitals do out of the rings (core/hologram.js: popIn).
+  const k = popIn((st.pop ??= {}), st.shown, now);
+  panel.mesh.scale.set(scale * k, scale * k * k, scale);
 }
 
 const wristPos = new THREE.Vector3();
@@ -1252,11 +1256,14 @@ function updatePointer(frame, now) {
   if (pick?.room) showFieldPick(pick.room);
   const over = pick && (pick.room ? fieldPlaceOnMap(pick.room) : mapCellInRoom(pick.cell));
   pPick.mesh.visible = !!over;
+  if (!over) popIn(pickPop, false, now);
   if (over) {
     pPick.mesh.position.copy(over);
     pPick.mesh.position.y += HUD.pick.liftM * (ctx.xr.presenting ? 1 : 8);
     pPick.mesh.lookAt(ctx.camera.getWorldPosition(v1));
-    pPick.mesh.scale.setScalar(HUD.pick.scale * (ctx.xr.presenting ? 1 : 6));
+    const size = HUD.pick.scale * (ctx.xr.presenting ? 1 : 6);
+    const k = popIn(pickPop, true, now);
+    pPick.mesh.scale.set(size * k, size * k * k, size);
   }
 }
 
