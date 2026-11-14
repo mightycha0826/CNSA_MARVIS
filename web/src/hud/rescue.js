@@ -2,6 +2,9 @@
 //
 // Pressing it once arms it for a few seconds ("SEND SOS"); pressing it again, or saying
 // "Confirm", sends the rescue signal. Arming first keeps a stray pinch from calling for help.
+// A fist made while the command card is up arms it too, and the card then shows nothing but
+// the button, large, for as long as the fist is held (hud/index.js); opening the hand disarms
+// it and brings the commands back.
 // By voice: "SOS", "Rescue" or "Help" (also "Emergency", "Mayday") arms it, one "Confirm" sends,
 // "Cancel" disarms, "Cancel rescue" withdraws a signal that was sent. The words that arm it are
 // in jetson/commands.json.
@@ -89,6 +92,12 @@ export function createRescue(ctx, { showToast, changed, battery }) {
       else if (s.phase === 'armed') send();
       else cancel();
     },
+    /** The fist that armed it is still held: it stays armed (the countdown starts when the hand opens or is lost). */
+    hold() {
+      if (s.phase === 'armed') s.armedUntil = performance.now() + K.armMs;
+    },
+    /** The hand opened without confirming: not armed any more. */
+    disarm,
     /** Every frame: an armed button that was not confirmed goes back to idle. True while it counts down (redraw). */
     tick(now) {
       if (s.phase === 'armed' && now > s.armedUntil) disarm();
