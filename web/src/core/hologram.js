@@ -224,8 +224,8 @@ export function unfoldStep(st, wanted, dt, rate = 9) {
 
 // ---- coming up ----
 // Everything a hand brings up comes up the same way: out of nothing, a little too large, and
-// back to its size, in about a third of a second. It is how the vitals unfold from the wrist
-// rings (hud/suit.js), and the maps, the menus and the cards over a hand use it too.
+// back to its size, in about a third of a second: the maps, the menus and the cards over the
+// left hand, and the vitals over the right palm (hud/suit.js).
 
 /** A spring let go at 0 toward 1: quick, with one small overshoot (about 6 %), settled in a third of a second. */
 export const pop = (t) => (t <= 0 ? 0 : 1 - Math.exp(-16 * t) * Math.cos(18 * t));

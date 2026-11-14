@@ -25,7 +25,7 @@ import * as THREE from 'three';
 import { HUD } from './config.js';
 import { STRINGS } from './strings.js';
 import { T, loadFont } from './tokens.js';
-import { drawBanner, drawAlert, drawAlertGlow, drawLayers, drawCommands } from './draw.js';
+import { drawBanner, drawAlert, drawAlertGlow, drawLayers, drawCommands, drawSosBig } from './draw.js';
 import { leftPalm, makePalmState } from '../core/palm.js';
 import { mode } from '../core/mode.js';
 import { createPointer, tipDown } from './pointer.js';
@@ -97,7 +97,21 @@ const engaged = { layers: false, commands: false, pick: false };
 let rescue = null; // the emergency button on the command card (rescue.js)
 let leftOpen = false; // the left hand is held open: only then does it bring a menu up
 let sosFistSince = null; // since when the left hand has been a fist over the command card
-let sosFistDone = false; // that fist has armed the SOS: it does not arm it again until the hand has opened
+let sosBig = false; // the command card shows the SOS button alone, large (a fist is held over it)
+
+/** The command card as the SOS button alone (a fist over it), or as the commands again (the hand opened). */
+function setSosBig(on) {
+  if (on && sosBig) rescue.hold(); // armed for as long as the fist is held
+  if (on === sosBig) return;
+  sosBig = on;
+  if (on) {
+    if (rescue.state().phase === 'idle') rescue.press(); // arm
+    clickSound();
+  } else if (rescue.state().phase === 'armed') rescue.disarm(); // the hand opened without a "Confirm"
+  // Either way the card comes up anew, the way everything over a hand comes up.
+  if (steady.commands.pop) steady.commands.pop.was = false;
+  dirty.commands = true;
+}
 // A place picked on the palm map with the pointer: a pin on the map and a small card over it.
 // What the card offers depends on what was picked (pick.kind):
 //   'place'     bare ground                 Navigate (it becomes the target) · Waypoint · Cancel
@@ -260,6 +274,13 @@ function commandsVM() {
   };
 }
 const SOS_ID = '__sos';
+/** The button alone, large: what it says while a fist holds it armed, and once the signal is out. */
+function sosBigVM() {
+  const z = rescue.vm(performance.now());
+  const pressedId = performance.now() < cmdTouch.pressedUntil ? cmdTouch.pressedId : null;
+  const sub = z.state === 'sent' ? z.sub : z.state === 'armed' ? 'Say "Confirm", or point and pinch · open your hand to cancel' : 'Rescue signal';
+  return { id: SOS_ID, state: z.state, label: z.state === 'sent' ? 'SOS SENT' : 'SEND SOS', sub, pulse: z.pulse, hover: cmdTouch.hoverId === SOS_ID, pressed: pressedId === SOS_ID };
+}
 const NAMING_PREFIX = '__name:'; // the naming buttons on the command card ("Confirm" is also a command's name)
 
 const onField = () => mode.current === 'field';
@@ -1075,7 +1096,7 @@ function followMenu(panel, st, wanted, held, scale, now, dt, { handSeen = false,
     st.shown = false; // quickly when the hand has turned away, slowly when it was only lost from view
   }
   panel.mesh.visible = st.shown;
-  // A menu comes up over the hand as the vitals do out of the rings (core/hologram.js: popIn).
+  // A menu springs up over the hand, as everything a hand brings up does (core/hologram.js: popIn).
   const k = popIn((st.pop ??= {}), st.shown, now);
   panel.mesh.scale.set(scale * k, scale * k * k, scale);
 }
@@ -1104,6 +1125,7 @@ function updateHands(frame) {
     pLayers.mesh.scale.setScalar(1);
     if (!commandsPinned) pCommands.mesh.visible = false;
     steady.layers.shown = steady.commands.shown = false;
+    if (!commandsPinned) setSosBig(false);
     suit.hide();
     mapInView = !ctx.xr.presenting; // the PC view always shows the map; with controllers we cannot tell
     return;
@@ -1136,25 +1158,17 @@ function updateHands(frame) {
     leftOpen = handOpen(left, xrFrame, refSpace, leftOpen);
     palmUp = leftOpen && v1.y < (steady.layers.shown ? L.palmUpDot + F.gestureSlack : L.palmUpDot);
     const backRaw = v1.y > (steady.commands.shown ? C.backUpDot - F.gestureSlack : C.backUpDot);
-    // A fist made while the command card is up arms the SOS (as pressing the red bar once
-    // does: "Confirm" or a second press then sends it). The card stays up over the fist, so
-    // the armed bar and its countdown are seen. Held for a moment first: one frame in which
-    // the tracking loses the fingers is not a fist.
+    // A fist made while the command card is up turns the card into the SOS button alone,
+    // large, and arms it (as pressing the red bar once does: "Confirm" or a press then sends
+    // it). It stays so while the fist is held; opening the hand disarms it and brings the
+    // commands back. Held for a moment first: one frame in which the tracking loses the
+    // fingers is not a fist.
     const fistOnCard = !leftOpen && backRaw && steady.commands.shown;
     if (!fistOnCard) sosFistSince = null;
-    else {
-      sosFistSince ??= now;
-      if (!sosFistDone && now - sosFistSince >= HUD.sos.fistMs) {
-        sosFistDone = true; // once per fist
-        if (rescue.state().phase === 'idle') {
-          rescue.press();
-          clickSound();
-        }
-      }
-    }
-    if (leftOpen) sosFistDone = false;
+    else sosFistSince ??= now;
+    setSosBig(fistOnCard && now - sosFistSince >= HUD.sos.fistMs);
     backUp = (leftOpen || fistOnCard) && backRaw;
-  }
+  } else setSosBig(false); // the left hand is not tracked: no fist is being held
   // The right hand's own two views (suit.js). While its emergency button is up, the left hand
   // is the one that points: its command card stays away so it does not pop up over the ray.
   // The right hand has one thing of its own, the vitals over its palm, and it is also the hand
@@ -1341,6 +1355,8 @@ export function init(context) {
       pCommands.mesh.scale.setScalar(HUD.commands.scale * 3);
       dirty.commands = true;
     },
+    /** PC: the command card as the large SOS button, as a fist held over it makes it (after showCommands(true)). */
+    sosBig: (on) => setSosBig(!!on),
     pointer,
     suit,
     rescue,
@@ -1479,7 +1495,7 @@ export function update(frame) {
     dirty.pick = false;
   }
   if (dirty.commands && pCommands.mesh.visible) {
-    commandHits = drawCommands(pCommands.g, HUD.pxPerDeg, commandsVM());
+    commandHits = sosBig ? drawSosBig(pCommands.g, HUD.pxPerDeg, sosBigVM()) : drawCommands(pCommands.g, HUD.pxPerDeg, commandsVM());
     pCommands.tex.needsUpdate = true;
     dirty.commands = false;
   }

@@ -543,21 +543,46 @@ export function drawCommands(g, d, vm) {
   return hits;
 }
 
+// ---- the emergency button alone, large (a fist over the command card, hud/index.js) ----
+// vm: { id, state: 'idle' | 'armed' | 'sent', label, sub, pulse: 0..1, hover, pressed }
+// The whole card is the button: red, its label as large as fits, one line under it.
+export function drawSosBig(g, d, vm) {
+  const W = g.canvas.width;
+  const H = g.canvas.height;
+  g.clearRect(0, 0, W, H);
+  const pad = 0.6 * d;
+  const fill = vm.state === 'sent' ? 'rgba(120, 18, 18, 0.94)' : `rgba(${vm.state === 'armed' ? 255 : 217}, ${vm.state === 'armed' ? 56 : 38}, ${vm.state === 'armed' ? 56 : 38}, ${vm.state === 'armed' ? 0.78 + 0.22 * vm.pulse : 1})`;
+  box(g, pad, pad, W - pad * 2, H - pad * 2, 2.2 * d, fill);
+  g.beginPath();
+  g.roundRect(pad + 0.3 * d, pad + 0.3 * d, W - pad * 2 - 0.6 * d, H - pad * 2 - 0.6 * d, 1.9 * d);
+  g.strokeStyle = vm.hover || vm.pressed ? '#ffffff' : 'rgba(255, 255, 255, 0.6)';
+  g.lineWidth = (vm.hover || vm.pressed ? 0.5 : 0.28) * d;
+  g.stroke();
+  let size = 5.6 * d;
+  while (size > 2 * d && measure(g, vm.label, 800, size) > W - pad * 2 - 3 * d) size -= 0.2 * d;
+  text(g, vm.label, W / 2, H / 2 - 1.6 * d, { weight: 800, size, color: '#ffffff', align: 'center', tight: true });
+  text(g, fit(g, vm.sub, W - pad * 2 - 3 * d, 600, 1.35 * d), W / 2, H / 2 + 3.4 * d, { weight: 600, size: 1.35 * d, color: 'rgba(255, 255, 255, 0.94)', align: 'center' });
+  return [{ id: vm.id, x: pad, y: pad, w: W - pad * 2, h: H - pad * 2 }];
+}
+
 // ---- a vital sign (one chip beside the figure over the right palm, suit.js) ----
 // chip: { label, value, unit, tag, state: '' | 'warn' | 'crit' }                         one reading, or
 //       { label, unit, rows: [{ label, value, tag, state }], state }                     a short table
-// A dark card with its outline in the state's colour: label and where the number comes from on
-// the first line, the number large under it. The chip fills its canvas.
+// Text alone, no card: the label and where the number comes from on the first line, the number
+// large under it.
 export function drawVitalChip(g, d, chip) {
   const W = g.canvas.width;
   const H = g.canvas.height;
   g.clearRect(0, 0, W, H);
   const tone = (state) => (state === 'crit' ? T.dangerLine : state === 'warn' ? T.point : null);
-  // A dark backing so the numbers read against a bright room, and no frame: a reading out of
-  // range is told by the colour of its name and number.
-  box(g, 0, 0, W, H, 1.0 * d, T.surface);
-  text(g, chip.rows && chip.unit ? `${chip.label} · ${chip.unit}` : chip.label, 0.8 * d, 1.3 * d, { weight: 600, size: 1.0 * d, color: tone(chip.state) ?? T.muted });
-  if (chip.tag) tag(g, chip.tag, W - 0.6 * d, 1.3 * d, d, true);
+  // Text only: no card behind it and no frame. A soft dark edge around the letters keeps them
+  // readable against a bright room. A reading out of range is told by the colour of its name and number.
+  g.save();
+  g.shadowColor = 'rgba(0, 0, 0, 0.85)';
+  g.shadowBlur = 0.55 * d;
+  const nameW = text(g, chip.rows && chip.unit ? `${chip.label} · ${chip.unit}` : chip.label, 0.8 * d, 1.3 * d, { weight: 600, size: 1.0 * d, color: tone(chip.state) ?? T.muted });
+  // Where the number comes from ("sim", "sensor"): small, right after the name.
+  if (chip.tag) text(g, chip.tag, 0.8 * d + nameW + 0.5 * d, 1.36 * d, { weight: 600, size: 0.78 * d, color: T.muted });
   if (chip.rows) {
     chip.rows.forEach((row, k) => {
       const ry = 2.5 * d + (k + 0.5) * 1.75 * d;
@@ -565,9 +590,10 @@ export function drawVitalChip(g, d, chip) {
       if (row.tag) text(g, row.tag, 0.8 * d + lw + 0.4 * d, ry + 0.08 * d, { weight: 600, size: 0.75 * d, color: T.muted });
       text(g, row.value, W - 0.8 * d, ry, { weight: 700, size: 1.3 * d, color: tone(row.state) ?? T.ink, align: 'right', tight: true });
     });
-    return;
+  } else {
+    const size = 2.1 * d;
+    const vw = text(g, chip.value, 0.8 * d, 3.55 * d, { weight: 700, size, color: tone(chip.state) ?? T.ink, tight: true });
+    if (chip.unit) text(g, chip.unit, 0.8 * d + vw + 0.35 * d, 3.85 * d, { weight: 600, size: 1.05 * d, color: T.muted });
   }
-  const size = 2.1 * d;
-  const vw = text(g, chip.value, 0.8 * d, 3.55 * d, { weight: 700, size, color: tone(chip.state) ?? T.ink, tight: true });
-  if (chip.unit) text(g, chip.unit, 0.8 * d + vw + 0.35 * d, 3.85 * d, { weight: 600, size: 1.05 * d, color: T.muted });
+  g.restore();
 }
