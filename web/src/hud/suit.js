@@ -527,7 +527,11 @@ export function createSuit(ctx) {
       if (fold.phase === 'rings' || fold.phase === 'closing') {
         fold.phase = 'opening';
         fold.since = now;
-      } else if (fold.phase === 'off') fold.phase = 'vitals';
+      } else if (fold.phase === 'off') {
+        // Coming up over a hand that was just raised: the same way as out of the rings.
+        fold.phase = 'opening';
+        fold.since = now;
+      }
       if (fold.phase === 'opening') {
         const t = (now - fold.since) / 1000;
         if (t >= FOLD.openS) fold.phase = 'vitals';

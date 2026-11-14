@@ -346,6 +346,8 @@ npm run dev        # https://localhost:5173/ (self-signed certificate)
   - **Narrow gaps.** A gap a person can get through sideways, about 30 cm, counts as walkable; a 10 cm gap does not. The route still keeps 30 cm from obstacles where there is room, and takes a squeeze only when the wide way is about 3 m longer.
   - `?mock=1` and `?mock=hazard` put a fake chair in place of the scan, so the real room is not outlined and live depth does nothing: on the headset without a Jetson use `?mock=link`.
 
+**Everything a hand brings up comes up the same way.** The maps over the left palm, the layer menu beside the map, the command card over the back of the hand, the card over a picked place and the vitals over the right palm all appear as the vitals do when they unfold from the wrist rings: out of nothing, a little too large (about 6 %), and back to their size within a third of a second, the height following just behind the width. So a hand that has just come into view does not have things switched on over it; they spring up (`web/src/core/hologram.js`: `popIn`). Going away is still at once. The left hand has no rings.
+
 **Menus: point and pinch.** The left hand brings a menu up, the right hand operates it from where it is, as with the Quest 3's own hand pointer. Nothing is touched, so the hands never cover each other from the headset's cameras.
 
 - Open left palm turned up: the map, with the layer tabs beside it (Mars map). **A menu or hologram shows only over an open hand** (at least three fingers stretched out): a hand that points, pinches or makes a fist brings nothing up, however it is turned.

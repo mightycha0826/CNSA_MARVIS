@@ -18,6 +18,7 @@
 // No hand tracking in here: the caller passes the wrist's pose every frame.
 
 import * as THREE from 'three';
+import { pop } from '../core/hologram.js';
 
 export const BRACELET = {
   rings: 5,
@@ -69,8 +70,7 @@ const smooth = (t) => t * t * (3 - 2 * t);
 /** Together again: slow to start, then all at once (0 -> 1). */
 const snap = (t) => Math.min(1, t) ** 3;
 
-/** A spring let go at 0 toward 1: quick, with one small overshoot (about 6 %), settled in a third of a second. */
-export const pop = (t) => (t <= 0 ? 0 : 1 - Math.exp(-16 * t) * Math.cos(18 * t));
+export { pop };
 
 export function createBracelet(scene) {
   const K = BRACELET;
