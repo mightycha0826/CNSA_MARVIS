@@ -5,6 +5,8 @@ An entry for the 2026 NASA Space Apps Challenge — *Interplanetary Survival Gui
 
 > A helmet HUD that builds the map and the route from NASA data, fills in nearby obstacles with the helmet's sensors, and changes the route when the suit's condition becomes dangerous.
 
+**Demo video:** [docs/demo/marswalk-visor-demo.mp4](docs/demo/marswalk-visor-demo.mp4), a screen recording of the app in use.
+
 **This project is built on NASA data.** The map, the route, the status panel and the alerts all start from NASA mission data. The headset, the Jetson and the Arduino are the means of delivering that data to the explorer.
 
 | Document | Who reads it | Contents |
