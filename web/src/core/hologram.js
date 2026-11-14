@@ -177,12 +177,17 @@ const apex = new THREE.Vector3();
 /**
  * Float a map over a palm (`hand`, the left one unless said) for this frame: shown once the open palm has been up for `holdMs`,
  * gliding after the hand, leaning toward the wearer, with the beam from the palm.
- * `st` keeps the state between frames: { shownSince: null }. Returns true when the map is shown.
+ * `st` keeps the state between frames: { shownSince: null } (and fist, see keepOnFist). Returns true when the map is shown.
  */
-export function floatOverPalm(root, beam, frame, camera, palmState, st, { holdMs, followRate, widthM, hand = 'left', allowed = true }) {
+export function floatOverPalm(root, beam, frame, camera, palmState, st, { holdMs, followRate, widthM, hand = 'left', allowed = true, keepOnFist = false }) {
   // Shown while that hand is held open with the palm up (and `allowed`: the caller's own veto).
-  if (!palmOf(frame, camera, palmState, hand) || !palmState.palmUp || !palmState.open || !allowed) {
+  // keepOnFist: once it is up it also stays over a hand that closes into a fist (palm still
+  // up); st.fist then says so, and the caller makes something of it (a map unfolds).
+  const tracked = palmOf(frame, camera, palmState, hand);
+  st.fist = tracked && keepOnFist && !palmState.open && root.visible;
+  if (!tracked || !palmState.palmUp || !(palmState.open || st.fist) || !allowed) {
     st.shownSince = null;
+    st.fist = false;
     root.visible = false;
     return false;
   }
@@ -206,54 +211,13 @@ export function floatOverPalm(root, beam, frame, camera, palmState, st, { holdMs
   return true;
 }
 
-// ---- sliding a map under its hologram with the hand ----
-// The hologram (its circle, its beam, its caption) goes where the palm goes. The map shown in
-// it follows only part of the way: move the palm 10 cm to the right and the map moves 4 cm, so
-// the circle now shows what lies 6 cm further right on it. The palm thereby chooses the part
-// of the map that is seen. Height is not part of this: the hologram is as high as the palm, so
-// raising it to the eyes simply shows it larger.
-//
-// What is shown depends on where the palm is held, not on how it got there: the offset is
-// measured from a fixed place beside the body (a little ahead of the head and to the left,
-// where the left palm is held to look at it), so raising the hand at some place shows what
-// moving it there would.
-export const PAN = {
-  follow: 0.4, // the part of the palm's movement the map goes along with
-  aheadM: 0.35, // the neutral place of the left palm: this far ahead of the head
-  leftM: 0.12, // and this far to the left
-  rate: 12, // how fast the offset follows the palm (1/s): takes the tremor out
-  facingRate: 1.5, // how fast "ahead" follows the head (1/s): a glance to the side does not slide the map
-};
-
-const eyeAt = new THREE.Vector3();
-const eyeDir = new THREE.Vector3();
-
 /**
- * How far the map's view is slid by where the palm is: metres on the map's surface, in room
- * axes (x east, z south), as `st.x`, `st.z`. Call every frame the map shows; `st` keeps the
- * smoothed values between frames: { x: 0, z: 0, fx: null, fz: null }.
- * @param palm the palm's position in the room (THREE.Vector3)
+ * How far a map is unfolded, eased: 0 the hologram in its circle, 1 spread out to all there is.
+ * `st`: { level: 0 }. Returns the eased level (smooth at both ends).
  */
-export function slideWithPalm(st, palm, camera, dt) {
-  camera.getWorldPosition(eyeAt);
-  camera.getWorldDirection(eyeDir);
-  const len = Math.hypot(eyeDir.x, eyeDir.z);
-  if (len > 0.2) {
-    // Where the body faces: the head's direction on the floor, followed slowly.
-    const k = st.fx == null ? 1 : 1 - Math.exp(-PAN.facingRate * dt);
-    const fx = (st.fx ?? 0) + (eyeDir.x / len - (st.fx ?? 0)) * k;
-    const fz = (st.fz ?? 0) + (eyeDir.z / len - (st.fz ?? 0)) * k;
-    const n = Math.hypot(fx, fz) || 1;
-    st.fx = fx / n;
-    st.fz = fz / n;
-  }
-  if (st.fx == null) return st;
-  // The neutral place: ahead of the head and to the left (right of "ahead" is (-fz, fx)).
-  const nx = eyeAt.x + st.fx * PAN.aheadM + st.fz * PAN.leftM;
-  const nz = eyeAt.z + st.fz * PAN.aheadM - st.fx * PAN.leftM;
-  const slide = 1 - PAN.follow;
-  const k = 1 - Math.exp(-PAN.rate * dt);
-  st.x += ((palm.x - nx) * slide - st.x) * k;
-  st.z += ((palm.z - nz) * slide - st.z) * k;
-  return st;
+export function unfoldStep(st, wanted, dt, rate = 9) {
+  st.level += ((wanted ? 1 : 0) - st.level) * (1 - Math.exp(-rate * Math.min(0.1, dt || 0.016)));
+  if (Math.abs((wanted ? 1 : 0) - st.level) < 0.003) st.level = wanted ? 1 : 0;
+  const t = st.level;
+  return t * t * (3 - 2 * t);
 }

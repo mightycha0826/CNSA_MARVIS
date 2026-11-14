@@ -246,6 +246,26 @@ function restTile(key) {
   return tile;
 }
 
+/**
+ * The ground outside the window that anything is known about, tile by tile:
+ * [{ x, z: room metres of the tile's corner, sizeM, cells: Uint8Array(tileCells x tileCells) }].
+ * With `hazard:update` (the window) this is every place the map knows: for the field map when
+ * it is unfolded to all of it (field/index.js).
+ */
+export function knownBeyondWindow() {
+  const out = [];
+  if (!originTile) return out;
+  const keys = new Set([...archive.keys(), ...(trusted && stored ? stored.keys() : [])]);
+  for (const key of keys) {
+    const t = parseKey(key);
+    if (!t) continue;
+    if (t[0] >= originTile[0] && t[0] < originTile[0] + TILES.window && t[1] >= originTile[1] && t[1] < originTile[1] + TILES.window) continue; // in the window
+    const cells = restTile(key);
+    if (cells) out.push({ x: t[0] * tileM(), z: t[1] * tileM(), sizeM: tileM(), cells });
+  }
+  return out;
+}
+
 /** Put a tile in the outbox if the hub does not have it like this. */
 function offer(key, tile) {
   const runs = tile ? encodeRuns(tile) : [255, TILES.cells * TILES.cells];
