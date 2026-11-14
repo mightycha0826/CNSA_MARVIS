@@ -113,7 +113,13 @@ function disposeObject(object) {
 // The caption is a card standing on the side of an imaginary cylinder whose top face is the map
 // (core/hologram.js: the same card, placed the same way, as on the field map).
 function makeLabel() { return makeCaption(root, 'map-caption'); }
-function placeCaption() { if (label) putCaption(label, root, ctx.camera, MAP.widthM); }
+function placeCaption() {
+  if (!label) return;
+  putCaption(label, root, ctx.camera, MAP.widthM);
+  // Unfolded (a fist under the map) it is a plain map: no caption card under it, no cone of light from the palm.
+  label.visible = unfolded <= 0.3;
+  if (beam && unfolded > 0.3) beam.visible = false;
+}
 function caption(note = '') {
   if (!label || !data) return;
   captionZoom = zoom; captionOpen = unfolded > 0.5;
@@ -427,7 +433,7 @@ export function update(frame) {
   }
   placeCaption();
   if (beam && left) {
-    beam.visible = true;
+    beam.visible = unfolded <= 0.3;
     // palm position in the map's own (tilted) frame
     updateBeam(normal.copy(palmState.palm).sub(root.position).applyQuaternion(tiltQuat.invert()));
   }

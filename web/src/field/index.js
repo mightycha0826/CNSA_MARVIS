@@ -71,9 +71,12 @@ export const FIELD = {
   spanM: 24, // the palm map shows spanM x spanM of ground (it was 20, on a map a fifth smaller: the scale is the same, 1 : 80)
   // Unfolded (a fist under the map): the point is to see more ground, not the same ground
   // larger. The map then covers what the circle showed and all known ground besides (with
-  // this margin around it), drawn unfoldEnlarge times larger than before, no more, unless
-  // that would make the map wider than unfoldMaxM: then the scale gives way.
+  // this margin around it), drawn unfoldEnlarge times larger than before, and no smaller
+  // either: the map grows as wide as unfoldMaxM, and ground that does not fit on that is
+  // left off (the part around the wearer is kept).
   // unfoldFade: how far the circle's fade opens (1 = none of it left).
+  // What makes it a hologram (the cone of light from the palm, the caption card under it)
+  // goes while it is unfolded: then it is a plain map over the hand.
   unfoldMarginM: 1.5,
   unfoldEnlarge: 1.15,
   unfoldMaxM: 1.1,
@@ -772,6 +775,10 @@ function placePalmMap(frame) {
     floatOverPalm(root, beam, frame, ctx.camera, palmState, floatState, { holdMs: MAP.holdMs, followRate: MAP.followRate, widthM: FIELD.mapM, keepOnFist: true });
   }
   placeCaption(caption, root, ctx.camera, FIELD.mapM);
+  // Unfolded it is a plain map: no cone of light from the palm, no caption card under it.
+  const plain = unfolded > 0.3;
+  caption.visible = !plain;
+  if (plain) beam.visible = false;
 }
 
 // ---------- module interface ----------
@@ -909,12 +916,20 @@ export function update(frame) {
     beyond = knownBeyondWindow();
     known = knownGround();
   } else if (!wanted && unfolded === 0) beyond = [];
-  const fit = known ?? { cx: head.x, cz: head.z, span: FIELD.spanM };
+  let fit = known ?? { cx: head.x, cz: head.z, span: FIELD.spanM };
+  // The scale is not given up for range: the map is at most unfoldMaxM wide, and of ground
+  // that does not fit on that, the part around the wearer is shown.
+  const most = (FIELD.unfoldMaxM / (FIELD.mapM * FIELD.unfoldEnlarge)) * FIELD.spanM;
+  if (fit.span > most) {
+    const slack = (fit.span - most) / 2;
+    const near = (at, mid) => Math.max(mid - slack, Math.min(mid + slack, at));
+    fit = { cx: near(head.x, fit.cx), cz: near(head.z, fit.cz), span: most };
+  }
   span = FIELD.spanM + (fit.span - FIELD.spanM) * unfolded;
   viewAt = [head.x + (fit.cx - head.x) * unfolded, head.z + (fit.cz - head.z) * unfolded];
   // The map grows with the ground it shows, so the scale stays (but for unfoldEnlarge): more
   // ground, not larger ground. (The PC view is already large: there it grows only a little.)
-  const full = Math.min(FIELD.unfoldMaxM / FIELD.mapM, (fit.span / FIELD.spanM) * FIELD.unfoldEnlarge);
+  const full = (fit.span / FIELD.spanM) * FIELD.unfoldEnlarge;
   grown = 1 + (full - 1) * unfolded * (frame.session ? 1 : 0.35);
   fieldView.zoom.value = 1 - FIELD.unfoldFade * unfolded;
   // Over a hand it comes up as everything a hand brings up does (core/hologram.js: popIn).
