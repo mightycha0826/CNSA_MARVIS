@@ -44,6 +44,8 @@ export function initDiag(sendJson, xr) {
   xr.onSessionStart((session) => {
     log('xr', { event: 'start', features: xr.enabledFeatures, visibility: session.visibilityState });
     setTimeout(() => xr.session === session && log('xr', { event: 'space', space: xr.space }), 1500);
+    // Whether the room's coordinates were kept from the last session (core/room-frame.js).
+    setTimeout(() => xr.session === session && log('xr', { event: 'roomAnchor', state: xr.roomAnchor }), 6000);
     session.addEventListener('visibilitychange', () => log('xr', { event: 'visibility', visibility: session.visibilityState }));
     const space = xr.refSpace;
     space?.addEventListener?.('reset', () => log('xr', { event: 'reference-space-reset' }));
