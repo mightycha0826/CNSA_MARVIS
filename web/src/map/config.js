@@ -7,7 +7,7 @@ export const MAP = Object.freeze({
   // the circle opens (unfoldFade: how far, 1 = none of it left) and the whole map shows at
   // that same scale, drawn only unfoldEnlarge times larger: more ground, not larger ground.
   // The PC view shows the whole map as it is.
-  zoom: 2, unfoldEnlarge: 1.15, unfoldFade: 0.75 });
+  zoom: 2, unfoldEnlarge: 1.3, unfoldFade: 0.75 });
 // Published HUD legend colours; no import of another module's runtime.
 export const RAMPS = {
   topo: [[18, 42, 74], [32, 120, 128], [196, 170, 110], [250, 246, 232]],
