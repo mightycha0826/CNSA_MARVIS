@@ -19,7 +19,7 @@ Source: https://www.spaceappschallenge.org/resources/project-submission-guide/
 
 The text below the line has no `[TODO]` marks left. It describes the project **as on `main` at 16:07 on 2026-11-14**. Check these before pressing Submit:
 
-- [ ] **Demo link.** The only thing still missing. Replace `DEMO LINK HERE` in "Link to Project Demo" with the public link (video of 30 s or less, or 7 slides or fewer).
+- [ ] **Demo link.** A screen recording of the app is in the repository, [demo/marswalk-visor-demo.mp4](demo/marswalk-visor-demo.mp4); whether it is 30 s or less has not been checked here. The only thing still missing. Replace `DEMO LINK HERE` in "Link to Project Demo" with the public link (video of 30 s or less, or 7 slides or fewer).
 - [ ] **Headset results.** Nothing in the repository records a run on the Quest 3, so "What has been tested" says the headset-only parts do not run in a desktop browser. Once the team has run them on the headset, replace that bullet with what actually happened (what worked, what did not).
 - [ ] **If a feature changes before the deadline, change its sentence.** The table below says what the text assumes.
 - [ ] **Use of Super Intelligence.** Filled in from the repository (commit records and file contents). Each member should confirm it and add any tool that is not listed.
