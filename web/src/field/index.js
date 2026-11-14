@@ -9,10 +9,11 @@
 //     a room crosses a visible part of the 2 km map; in field mode it is 1 : 1.
 //
 // In field mode (the second button on the start page)
-//   - The palm map shows FIELD.spanM of ground, 1 : 80. Which ground depends on where the
-//     palm is held: the map follows only part of the hand's movement, so moving the palm slides
-//     the view over the ground (core/hologram.js: slideWithPalm). Held where a palm is
-//     naturally held, the wearer is in the middle. On it is only
+//   - The palm map shows FIELD.spanM of ground around the wearer, 1 : 80, and goes where the
+//     palm goes. Close the hand into a fist while the map is up and it unfolds: larger, out
+//     of its circle, showing all the ground the scan knows (the window and what lies beyond
+//     it, scan/index.js: knownBeyondWindow), still over the hand. Open the hand and it folds
+//     back. On it is only
 //     what the headset has scanned (`hazard:update` from scan/): clear floor and structure.
 //     Ground the headset knows nothing about is left empty, with no frame around the map.
 //     (It used to show the Mars image there, which read as floor that had been seen.)
@@ -42,7 +43,8 @@
 import * as THREE from 'three';
 import { mode } from '../core/mode.js';
 import { makePalmState } from '../core/palm.js';
-import { makeBeam, makeCaption, writeCaption, placeCaption, floatOverPalm, fadeBeyondCircle, slideWithPalm } from '../core/hologram.js';
+import { makeBeam, makeCaption, writeCaption, placeCaption, floatOverPalm, fadeBeyondCircle, unfoldStep } from '../core/hologram.js';
+import { knownBeyondWindow } from '../scan/index.js';
 import { MAP } from '../map/config.js';
 import { sampleHeight } from '../map/terrain.js';
 import { createGridFrame, cellToWorld, worldToCell } from '../nav/coordinates.js';
@@ -66,7 +68,11 @@ export const WALK = {
 
 export const FIELD = {
   spanM: 24, // the palm map shows spanM x spanM of ground (it was 20, on a map a fifth smaller: the scale is the same, 1 : 80)
-  panMaxM: 14, // the view can be slid this far from the wearer: beyond lies nothing the scan's window (25.6 m) holds
+  // Unfolded (a fist under the map): the whole known ground, with this margin around it,
+  // on a map this many times larger, the circle's fade opened this far (1 = none of it left).
+  unfoldMarginM: 1.5,
+  unfoldScale: 2.2,
+  unfoldFade: 0.62,
   mapM: MAP.widthM, // size of the palm map (m): the same as the Mars map
   mapPx: 512,
   segments: 128, // the map surface is a grid of this many quads per side, raised into a relief
@@ -95,15 +101,21 @@ let frameT = null; // D's map metre frame
 let anchorMap = null; // map metres where the session started
 let grid = null; // latest hazard:update
 let gridCanvas = null; // the scan drawn at grid resolution
+let tileCanvas = null; // one tile of the ground beyond the window, while it is drawn
 const head = new THREE.Vector3();
 let heading = 0; // radians, 0 = facing -z (north on the map), clockwise positive
 const headStart = new THREE.Vector3();
 let haveHead = false;
-const span = FIELD.spanM; // metres of ground across the map
-const slide = { x: 0, z: 0, fx: null, fz: null }; // how far the palm has slid the view (core/hologram.js), metres on the map
-let viewAt = [0, 0]; // the place in the room that the middle of the map shows: the wearer, slid by the palm
-let drawnAt = [NaN, NaN]; // viewAt when the map was last drawn
-let drawnHead = [NaN, NaN]; // and where the wearer stood then (walking alone redraws at the usual pace)
+let span = FIELD.spanM; // metres of ground across the map as it is drawn now
+let viewAt = [0, 0]; // the place in the room that the middle of the map shows: the wearer, or the middle of all known ground
+// Unfolding (a fist under the map): how far (0..1, eased), the size it has grown to, and the ground to fit.
+const unfold = { level: 0 };
+let unfolded = 0;
+let grown = 1;
+let known = null; // { cx, cz, span }: the middle and the size of all known ground, worked out when the map is redrawn
+let beyond = []; // the known tiles outside the scan's window (scan/index.js), fetched while unfolded
+let unfoldTest = null; // PC testing: __field.unfold(true)
+const fieldView = { zoom: { value: 1 }, shift: { value: new THREE.Vector2() } }; // the circle's fade (core/hologram.js)
 let target = null; // THREE.Vector3 on the floor, or null
 let targetLabel = ''; // its name, when it was set from a waypoint
 // Marked places: id -> { id, label, room: [x, z] } (field mode) or { id, label, cell } (Mars mode).
@@ -112,6 +124,41 @@ const passed = new Set(); // waypoints the wearer has been at on the way to this
 let viaSaid = ''; // the stops last announced
 let picked = false; // a place is picked on the map and its card is up (hud): "Navigate" then means that place
 let lastWaypointDraw = 0;
+let knownAt = 0;
+
+/** The middle and the size of all the ground the scan knows: the window's known cells and the tiles beyond it. */
+function knownGround() {
+  let x0 = Infinity;
+  let x1 = -Infinity;
+  let z0 = Infinity;
+  let z1 = -Infinity;
+  if (grid) {
+    const { cols, rows, cells, cellSizeM, originXZ } = grid;
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        if (cells[r * cols + c] === 255) continue;
+        const x = originXZ[0] + c * cellSizeM;
+        const z = originXZ[1] + r * cellSizeM;
+        if (x < x0) x0 = x;
+        if (x > x1) x1 = x;
+        if (z < z0) z0 = z;
+        if (z > z1) z1 = z;
+      }
+    }
+  }
+  for (const t of beyond) {
+    x0 = Math.min(x0, t.x);
+    x1 = Math.max(x1, t.x + t.sizeM);
+    z0 = Math.min(z0, t.z);
+    z1 = Math.max(z1, t.z + t.sizeM);
+  }
+  // The wearer is on the map too, whatever is known.
+  x0 = Math.min(x0, head.x);
+  x1 = Math.max(x1, head.x);
+  z0 = Math.min(z0, head.z);
+  z1 = Math.max(z1, head.z);
+  return { cx: (x0 + x1) / 2, cz: (z0 + z1) / 2, span: Math.max(FIELD.spanM * 0.5, Math.max(x1 - x0, z1 - z0) + 2 * FIELD.unfoldMarginM) };
+}
 let guiding = false;
 let route = { points: [], distanceM: 0, blocked: false };
 let lastPlan = 0;
@@ -120,7 +167,6 @@ let lastEmitRoute = 0;
 let lastDraw = 0;
 let lastStatus = null;
 let simulated = null; // PC testing: { x, z, heading }
-let slideTest = false; // PC testing: __field.slide(x, z) holds the view slid
 
 const v = new THREE.Vector3();
 const dummy = new THREE.Object3D();
@@ -159,13 +205,20 @@ function placeMapMarkers() {
     return [mx, Number.isFinite(y) ? y : 0, mz];
   };
 
+  // The map may have grown (unfolded): what stands on it keeps its size.
+  const put = (marker, x, y, z, lift) => {
+    place(marker, x, y, z, lift / grown);
+    const stem = marker.getObjectByName('stem');
+    if (stem) stem.scale.y = lift;
+    marker.scale.setScalar(1 / grown);
+  };
   const [hx, hy, hz] = onMap(head.x, head.z);
-  place(you, hx, hy, hz, MARK.youLiftM);
+  put(you, hx, hy, hz, MARK.youLiftM);
   you.rotation.y = -heading;
 
   goal.visible = false;
   if (target) {
-    place(goal, ...onMap(target.x, target.z), MARK.targetLiftM);
+    put(goal, ...onMap(target.x, target.z), MARK.targetLiftM);
     goal.rotation.y = performance.now() / 900;
   }
 
@@ -192,7 +245,8 @@ function placeMapMarkers() {
     const mz = (w.room[1] - centre[1]) * perRoomM;
     const y = surfaceY(mx, mz);
     marker.visible = false;
-    if (Math.hypot(mx, mz) <= FIELD.mapM * 0.47 && Number.isFinite(y)) place(marker, mx, y, mz, MARK.waypointLiftM);
+    // In the circle, or anywhere on the map once it is unfolded out of it.
+    if ((Math.hypot(mx, mz) <= FIELD.mapM * 0.47 || (unfolded > 0.6 && Math.max(Math.abs(mx), Math.abs(mz)) <= edge)) && Number.isFinite(y)) put(marker, mx, y, mz, MARK.waypointLiftM);
   }
 
   const shown = guiding && route.points.length > 1;
@@ -200,8 +254,8 @@ function placeMapMarkers() {
   if (shown) {
     band.set(route.points.map(([x, z]) => {
       const [mx, my, mz] = onMap(x, z);
-      return [mx, my + MARK.youLiftM * 0.45, mz];
-    }), 0.0024);
+      return [mx, my + (MARK.youLiftM * 0.45) / grown, mz];
+    }), 0.0024 / grown);
   }
 }
 
@@ -220,7 +274,7 @@ function makePalmMap() {
   geometry.setAttribute('color', new THREE.BufferAttribute(new Float32Array((N + 1) * (N + 1) * 3).fill(1), 3));
   // alphaTest: the empty parts of the picture are not drawn at all (and hide nothing behind them).
   const surface = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ map: tex, vertexColors: true, side: THREE.DoubleSide, toneMapped: false, transparent: true, alphaTest: 0.05 }));
-  fadeBeyondCircle(surface.material, FIELD.mapM); // as the Mars map: it dissolves outside the hologram's circle
+  fadeBeyondCircle(surface.material, FIELD.mapM, { view: fieldView }); // as the Mars map: it dissolves outside the hologram's circle (which opens when the map unfolds)
   surface.name = 'field-map-surface';
   surface.frustumCulled = false; // its heights change without the bounding sphere being recomputed
   const beam = makeBeam('field-palm-beam');
@@ -266,6 +320,25 @@ function drawPalmMap() {
     const [gx, gz] = toPx(grid.originXZ[0], grid.originXZ[1]);
     g.imageSmoothingEnabled = false;
     g.drawImage(gridCanvas, gx, gz, grid.cols * grid.cellSizeM * k, grid.rows * grid.cellSizeM * k);
+  }
+
+  // Unfolded: also the ground the scan knows outside its window.
+  if (beyond.length) {
+    tileCanvas ??= document.createElement('canvas');
+    for (const t of beyond) {
+      const n = Math.round(Math.sqrt(t.cells.length));
+      tileCanvas.width = tileCanvas.height = n;
+      const tg = tileCanvas.getContext('2d');
+      const img = tg.createImageData(n, n);
+      for (let i = 0; i < t.cells.length; i++) {
+        const c = t.cells[i] === 1 ? STRUCTURE : t.cells[i] === 0 ? CLEAR : null;
+        if (c) img.data.set(c, i * 4);
+      }
+      tg.putImageData(img, 0, 0);
+      const [tx, tz] = toPx(t.x, t.z);
+      g.imageSmoothingEnabled = false;
+      g.drawImage(tileCanvas, tx, tz, t.sizeM * k, t.sizeM * k);
+    }
   }
 
   // The route, the target and the wearer are not painted here: they float above the map (makeMapMarkers).
@@ -346,9 +419,9 @@ function writeFieldCaption() {
     note = !guiding ? `Target ${d} m · guidance off` : lastStatus === 'blocked' ? `Target ${d} m · no clear way through` : `Target ${d} m · violet: the way there`;
   }
   writeCaption(palmMap.caption, [
-    `${layerSet?.mock ? 'SYNTHETIC · ' : ''}Field map · ${span} m across · N ↑`,
+    `${layerSet?.mock ? 'SYNTHETIC · ' : ''}Field map · ${Math.round(span)} m across${unfolded > 0.5 ? ' · all known ground' : ''} · N ↑`,
     source,
-    `Map extent ${span} × ${span} m · ${grid ? grid.cellSizeM : 0.1} m/cell · move your palm to slide the view`,
+    `Map extent ${Math.round(span)} × ${Math.round(span)} m · ${grid ? grid.cellSizeM : 0.1} m/cell · close your hand to unfold it`,
     note,
     `Teal: you · orange diamond: target · blue: waypoints${waypoints.size ? ` (${[...waypoints.values()].filter((w) => w.room).length})` : ''} · orange ground: structure or a drop`,
     'Only scanned ground is drawn; the rest is empty until the headset has seen it',
@@ -681,18 +754,14 @@ function placePalmMap(frame) {
   if (!frame.session) {
     // PC view: where the Mars map stands in Mars mode, at the same size and tilt.
     floatState.shownSince = null;
-    if (!slideTest) slide.x = slide.z = 0; // the PC view has no hand to move the map with
     beam.visible = false;
     root.visible = true;
     root.position.set(0, 0.85, 0);
     root.quaternion.identity();
     root.rotation.x = MAP.desktopTiltRad;
-    root.scale.setScalar(MAP.desktopScale);
   } else {
-    // Headset: over the left palm, exactly as the Mars map floats (core/hologram.js).
-    root.scale.setScalar(1);
-    const shown = floatOverPalm(root, beam, frame, ctx.camera, palmState, floatState, { holdMs: MAP.holdMs, followRate: MAP.followRate, widthM: FIELD.mapM });
-    if (shown) slideWithPalm(slide, palmState.palm, ctx.camera, frame.dt);
+    // Headset: over the left palm, exactly as the Mars map floats (core/hologram.js); it stays over a fist, unfolded.
+    floatOverPalm(root, beam, frame, ctx.camera, palmState, floatState, { holdMs: MAP.holdMs, followRate: MAP.followRate, widthM: FIELD.mapM, keepOnFist: true });
   }
   placeCaption(caption, root, ctx.camera, FIELD.mapM);
 }
@@ -777,13 +846,11 @@ export function init(context) {
       simulated = { x, z, heading: THREE.MathUtils.degToRad(headingDeg) };
     },
     clear: clearTarget,
-    /** PC: slide the view as a palm held x, z metres (on the map) from its neutral place would; slide() gives it back. */
-    slide(x, z) {
-      slideTest = x != null;
-      slide.x = x ?? 0;
-      slide.z = z ?? 0;
+    /** PC: unfold(true) unfolds the map as a fist under it would, unfold(false) folds it, unfold(null) gives it back to the hand. */
+    unfold(on) {
+      unfoldTest = on;
     },
-    state: () => ({ viewAt, via: route.via ?? [], spanM: span, mode: mode.current, head: [head.x, head.z], target: target && [target.x, target.z], targetLabel, waypoints: [...waypoints.values()], waypointsInRoom: fx.waypointsShown, guiding, status: lastStatus, route: route.points.length, distanceM: route.distanceM, arrows: fx.arrows, targetShown: fx.targetShown, marsScale, marsRoute: marsRoute && { targetId: marsRoute.targetId, distanceM: marsRoute.distanceM, points: marsRoute.points.length } }),
+    state: () => ({ viewAt, unfolded, known, via: route.via ?? [], spanM: span, mode: mode.current, head: [head.x, head.z], target: target && [target.x, target.z], targetLabel, waypoints: [...waypoints.values()], waypointsInRoom: fx.waypointsShown, guiding, status: lastStatus, route: route.points.length, distanceM: route.distanceM, arrows: fx.arrows, targetShown: fx.targetShown, marsScale, marsRoute: marsRoute && { targetId: marsRoute.targetId, distanceM: marsRoute.distanceM, points: marsRoute.points.length } }),
     /** The map as drawn: caption text, how many surface vertices stand on structure, the tallest point (m on the map). */
     map: () => {
       const y = palmMap.surface.geometry.attributes.position;
@@ -824,17 +891,26 @@ export function update(frame) {
 
   if (haveHead) guide(now);
   placePalmMap(frame);
-  // Where the palm is held slides the view over the ground (PC view: no hand, the wearer in the middle).
-  const perMapM = span / FIELD.mapM; // ground metres per metre on the map
-  const far = Math.hypot(slide.x, slide.z) * perMapM;
-  const hold = far > FIELD.panMaxM ? FIELD.panMaxM / far : 1;
-  viewAt = [head.x + slide.x * perMapM * hold, head.z + slide.z * perMapM * hold];
-  // Drawn again five times a second, and sooner while the view is being slid, so that glides.
-  const sliding = Math.hypot(viewAt[0] - drawnAt[0], viewAt[1] - drawnAt[1]) > span / 300 && Math.hypot(head.x - drawnHead[0], head.z - drawnHead[1]) < 0.05;
-  if (palmMap.root.visible && now - lastDraw > (sliding ? 40 : FIELD.redrawMs)) {
+  // A fist under the map unfolds it: from the wearer's surroundings in the circle to all known ground, larger.
+  const wanted = unfoldTest ?? (!!frame.session && !!floatState.fist);
+  const before = unfolded;
+  unfolded = unfoldStep(unfold, wanted, frame.dt);
+  const moving = Math.abs(unfolded - before) > 1e-4;
+  if (wanted && (!known || now - knownAt > 1000)) {
+    knownAt = now;
+    beyond = knownBeyondWindow();
+    known = knownGround();
+  } else if (!wanted && unfolded === 0) beyond = [];
+  const fit = known ?? { cx: head.x, cz: head.z, span: FIELD.spanM };
+  span = FIELD.spanM + (fit.span - FIELD.spanM) * unfolded;
+  viewAt = [head.x + (fit.cx - head.x) * unfolded, head.z + (fit.cz - head.z) * unfolded];
+  // The PC view is already large: there it grows only a little, enough to see it happen.
+  grown = 1 + (FIELD.unfoldScale - 1) * unfolded * (frame.session ? 1 : 0.35);
+  fieldView.zoom.value = 1 - FIELD.unfoldFade * unfolded;
+  palmMap.root.scale.setScalar((frame.session ? 1 : MAP.desktopScale) * grown);
+  // Drawn again five times a second, and sooner while it unfolds or folds, so that glides.
+  if (palmMap.root.visible && now - lastDraw > (moving ? 40 : FIELD.redrawMs)) {
     lastDraw = now;
-    drawnAt = viewAt;
-    drawnHead = [head.x, head.z];
     drawPalmMap();
     updateRelief();
     writeFieldCaption();

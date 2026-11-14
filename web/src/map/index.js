@@ -32,7 +32,7 @@ import * as THREE from 'three';
 import { MAP, rampColor } from './config.js';
 import { mapPoint, range, sampleHeight, terrainArrays } from './terrain.js';
 import { PALM, leftPalm, handOpen, makePalmState } from '../core/palm.js';
-import { makeBeam, updateBeam as aimBeam, makeCaption, writeCaption, placeCaption as putCaption, fadeBeyondCircle, slideWithPalm } from '../core/hologram.js';
+import { makeBeam, updateBeam as aimBeam, makeCaption, writeCaption, placeCaption as putCaption, fadeBeyondCircle, unfoldStep } from '../core/hologram.js';
 import { createGridFrame, worldToCell, cellToWorld } from '../nav/coordinates.js';
 import { MARK, makeYou, makeTarget, makeWaypoint, makePin, setLabel, place } from '../core/markers.js';
 import { makeRibbon, GUIDE } from '../field/guide.js';
@@ -43,12 +43,13 @@ let routePoints = [], routeBand = null, targetMarker = null, off = [], textures 
 // Waypoints the wearer marked (hud): id -> { id, label, cell }, and the marker of each on the map as it is built now.
 const marked = new Map(), markedMarkers = new Map();
 const lookDir = new THREE.Vector3();
-// Which part of the map shows: `content` (the terrain and all that stands on it) is enlarged
-// `zoom` times (MAP.zoom in the headset, 1 on a PC: the whole map) and lies under the
-// hologram's circle with the wearer in its middle, slid by where the palm is held
-// (core/hologram.js: slideWithPalm). What leaves the circle fades out or is hidden.
+// The map goes where the palm goes, all of it in the hologram's circle. Close the hand into a
+// fist while it is up and it unfolds: `grown` times larger and out of its circle, so its
+// corners show too; open the hand and it folds back. (`zoom` enlarges the content under the
+// circle around the wearer: 1, the whole map, unless a test sets it.)
 let content = null, zoom = 1, me = null, laidFor = '', captionZoom = 1;
-const slide = { x: 0, z: 0, fx: null, fz: null }; // metres on the map, in room axes
+const unfold = { level: 0 };
+let unfolded = 0, grown = 1, fist = false, unfoldTest = null;
 const view = { zoom: { value: 1 }, shift: { value: new THREE.Vector2() } }; // for the fade of everything on the map
 const placed = new Map(); // marker -> { p: [x, y, z] its place on the surface, lift }
 let routeRaw = []; // the route's points on the surface, before lift
@@ -57,24 +58,22 @@ function put(marker, p, lift) { placed.set(marker, { p, lift }); lay(marker); }
 function unput(marker) { if (marker) { placed.delete(marker); marker.visible = false; } }
 function lay(marker) {
   const { p, lift } = placed.get(marker);
-  place(marker, p[0], p[1], p[2], lift / zoom);
-  const s = marker.getObjectByName('stem'); if (s) s.scale.y = lift; // the marker is scaled 1 / zoom, its stem with it
-  marker.scale.setScalar(1 / zoom);
-  // Outside the circle a marker would stand in the air beside the map.
-  marker.visible = Math.hypot(p[0] * zoom + view.shift.value.x, p[2] * zoom + view.shift.value.y) <= MAP.widthM * 0.49;
+  const k = zoom * grown; // the map may be enlarged or unfolded: what stands on it keeps its size
+  place(marker, p[0], p[1], p[2], lift / k);
+  const s = marker.getObjectByName('stem'); if (s) s.scale.y = lift; // the marker is scaled 1 / k, its stem with it
+  marker.scale.setScalar(1 / k);
+  // Outside the circle a marker would stand in the air beside the map (the circle opens when the map unfolds).
+  marker.visible = Math.hypot(p[0] * zoom + view.shift.value.x, p[2] * zoom + view.shift.value.y) * view.zoom.value / zoom <= MAP.widthM * 0.49;
 }
 /** Enlarge and move the content for the zoom in use, and put everything on it in place again when that changed. */
 function applyZoom() {
   if (!content) return;
   const f = Math.min(1, (zoom - 1) / 0.5); // the whole map (zoom 1) is centred on itself, an enlarged one on the wearer
   const at = me ?? [0, 0, 0];
-  // The middle of the circle stays over the map, however far the palm reaches.
-  const half = zoom * MAP.widthM / 2, halfDepth = half * (transform?.depth ?? 1) / (transform?.width ?? 1);
-  const hold = (v, limit) => Math.max(-limit, Math.min(limit, v));
   content.scale.setScalar(zoom);
-  content.position.set(hold(-zoom * at[0] * f - slide.x, half), (1 - zoom) * at[1] * f, hold(-zoom * at[2] * f - slide.z, halfDepth));
-  view.zoom.value = zoom; view.shift.value.set(content.position.x, content.position.z);
-  const key = `${zoom.toFixed(3)}|${content.position.x.toFixed(4)}|${content.position.z.toFixed(4)}`;
+  content.position.set(-zoom * at[0] * f, (1 - zoom) * at[1] * f, -zoom * at[2] * f);
+  view.zoom.value = zoom * (1 - MAP.unfoldFade * unfolded); view.shift.value.set(content.position.x, content.position.z);
+  const key = `${zoom.toFixed(3)}|${grown.toFixed(3)}|${content.position.x.toFixed(4)}|${content.position.z.toFixed(4)}`;
   if (key === laidFor) return;
   laidFor = key;
   for (const marker of placed.keys()) lay(marker);
@@ -83,15 +82,18 @@ function applyZoom() {
 }
 function layRoute() {
   if (!routeBand) return;
-  const lift = MARK.youLiftM * 0.45 / zoom;
+  const lift = MARK.youLiftM * 0.45 / (zoom * grown);
   routeBand.mesh.visible = routeRaw.length > 1;
-  routeBand.set(routeRaw.length > 1 ? routeRaw.map(p => [p[0], p[1] + lift, p[2]]) : [], 0.0024 / zoom);
+  routeBand.set(routeRaw.length > 1 ? routeRaw.map(p => [p[0], p[1] + lift, p[2]]) : [], 0.0024 / (zoom * grown));
 }
-let forcedZoom = null, forcedSlide = false; // PC testing: window.__map.zoom(2), window.__map.slide(0.05, 0)
-/** The headset shows the map enlarged, the PC view whole. */
-function setZoom(frame) {
-  zoom = forcedZoom ?? (frame.session ? MAP.zoom : 1);
-  if (!frame.session && !forcedSlide) slide.x = slide.z = 0;
+let forcedZoom = null; // PC testing: window.__map.zoom(2)
+/** How far the map is unfolded this frame (a fist under it), and the size it has grown to. */
+function setView(frame) {
+  zoom = forcedZoom ?? 1;
+  unfolded = unfoldStep(unfold, unfoldTest ?? (!!frame.session && fist && root.visible), frame.dt);
+  // The PC view is already large: there it grows only a little, enough to see it happen.
+  grown = 1 + (MAP.unfoldScale - 1) * unfolded * (frame.session ? 1 : 0.35);
+  root.scale.setScalar((frame.session ? 1 : MAP.desktopScale) * grown);
 }
 const position = new THREE.Vector3(), wristQuat = new THREE.Quaternion(), normal = new THREE.Vector3();
 const palmState = makePalmState();
@@ -116,7 +118,7 @@ function caption(note = '') {
   writeCaption(label, [
     `${data.layerSet.mock ? 'SYNTHETIC · ' : ''}${data.layerSet.site?.name ?? 'Terrain map'} · N ↑`,
     `${layer?.labelEn ?? layer?.label ?? 'Terrain'} · ${layer?.mission ?? ''} ${layer?.instrument ?? ''}`,
-    zoom > 1.02 ? `Showing ${Math.round(transform.width / zoom / 10) * 10} m of ${transform.width} m · move your palm to slide the view` : `Map extent ${transform.width} × ${transform.depth} m · ${transform.cellSizeM} m/cell`,
+    `Map extent ${transform.width} × ${transform.depth} m · ${transform.cellSizeM} m/cell · close your hand to unfold it`,
     note || (activeLayer === 'thermal' ? 'Relative brightness · not temperature' : 'Teal: you · orange diamond: target · blue: waypoints · violet: route'),
     'Route distances use map metres. Display size does not affect planning.',
     layer?.credit ?? (data.layerSet.mock ? 'Synthetic example, not NASA observations' : 'Data sources: layerset.json'),
@@ -351,8 +353,8 @@ export function mapTargetCell() {
 
 export function init(context) {
   dispose(); ctx = context; root = new THREE.Group(); root.name = 'palm-map'; ctx.scene.add(root);
-  // PC testing without a headset: __map.zoom(2) shows the map as the headset does, __map.slide(0.05, 0) slides the view as a palm held 5 cm (on the map) to the right would; null gives each back.
-  if (typeof window !== 'undefined') window.__map = { zoom: z => { forcedZoom = z; }, slide: (x, z) => { forcedSlide = x != null; slide.x = x ?? 0; slide.z = z ?? 0; }, state: () => ({ zoom, shownM: transform ? transform.width / zoom : null, markers: [...placed.keys()].map(m => `${m.name}${m.visible ? '' : ' (hidden)'}`) }) };
+  // PC testing without a headset: __map.unfold(true) unfolds the map as a fist under it would (false folds it, null gives it back to the hand); __map.zoom(2) enlarges the content around the wearer.
+  if (typeof window !== 'undefined') window.__map = { zoom: z => { forcedZoom = z; }, unfold: on => { unfoldTest = on; }, state: () => ({ zoom, unfolded, shownM: transform ? transform.width / zoom : null, markers: [...placed.keys()].map(m => `${m.name}${m.visible ? '' : ' (hidden)'}`) }) };
   root.position.set(0, 0.85, 0); root.scale.setScalar(MAP.desktopScale); root.rotation.x = MAP.desktopTiltRad;
   off.push(ctx.bus.on('layers:ready', load), ctx.bus.on('layer:toggle', ({ id, visible }) => { void selectLayer(id, visible); }),
     ctx.bus.on('nav:position', ({ point }) => setCurrent(point)), ctx.bus.on('nav:route', event => {
@@ -375,7 +377,7 @@ export function init(context) {
   }));
 }
 export function update(frame) {
-  if (root && data) { setZoom(frame); applyZoom(); }
+  if (root && data) { setView(frame); applyZoom(); }
   tickMarkers();
   if (root && data && !frame.session) placeCaption(); // PC view
   if (!root || !data || !arrays || !frame.session) return;
@@ -391,13 +393,15 @@ export function update(frame) {
     if (!wrist) { root.visible = false; shownSince = null; return; }
     const q = wrist.transform.orientation; wristQuat.set(q.x, q.y, q.z, q.w);
     // The map shows over an open palm turned up; a hand that points or closes does not bring it up.
+    // Once it is up it also stays over a hand that closes into a fist (palm still up): the map then unfolds (setView).
     palmState.open = handOpen(left.hand, xrFrame, refSpace, palmState.open);
-    const up = normal.set(0, 1, 0).applyQuaternion(wristQuat).y < MAP.palmUpDot && palmState.open;
-    if (!up) { shownSince = null; root.visible = false; return; }
+    fist = !palmState.open && root.visible;
+    const up = normal.set(0, 1, 0).applyQuaternion(wristQuat).y < MAP.palmUpDot && (palmState.open || fist);
+    if (!up) { shownSince = null; root.visible = false; fist = false; return; }
     if (shownSince === null) shownSince = time;
     if (time - shownSince < MAP.holdMs) { root.visible = false; return; }
     // Float above and a little in front of the palm instead of sitting on the wrist.
-    if (leftPalm(frame, ctx.camera, palmState)) { position.copy(palmState.anchor); slideWithPalm(slide, palmState.palm, ctx.camera, dt); }
+    if (leftPalm(frame, ctx.camera, palmState)) position.copy(palmState.anchor);
     else { const p = wrist.transform.position; position.set(p.x, p.y + 0.06, p.z); }
     if (!beam) { beam = makeBeam(); root.add(beam); }
   } else {

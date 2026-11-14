@@ -227,7 +227,7 @@ export const HUD = {
   },
   /** Emergency button: the red bar on the command card (hud/rescue.js). Pressed once it is
    *  armed for armMs; pressed again, or "Confirm" said, it sends. */
-  sos: { armMs: 8000 },
+  sos: { armMs: 8000, fistMs: 250 }, // fistMs: a fist over the command card arms it after being held this long
   /** The card over a place picked on the palm map: up to four buttons in a row (hud/index.js).
    *  snapM: a pick this near a waypoint or the target, on the map, picks that marker (m on the map);
    *  namingMs: how long a waypoint that was just set offers Record / Confirm;

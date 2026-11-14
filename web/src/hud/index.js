@@ -95,6 +95,8 @@ let pointerTargets = [];
 const engaged = { layers: false, commands: false, pick: false };
 let rescue = null; // the emergency button on the command card (rescue.js)
 let leftOpen = false; // the left hand is held open: only then does it bring a menu up
+let sosFistSince = null; // since when the left hand has been a fist over the command card
+let sosFistDone = false; // that fist has armed the SOS: it does not arm it again until the hand has opened
 // A place picked on the palm map with the pointer: a pin on the map and a small card over it.
 // What the card offers depends on what was picked (pick.kind):
 //   'place'     bare ground                 Navigate (it becomes the target) · Waypoint · Cancel
@@ -1129,7 +1131,25 @@ function updateHands(frame) {
     // turned for another reason. (A hand that relaxes a little stays "open": handOpen is sticky.)
     leftOpen = handOpen(left, xrFrame, refSpace, leftOpen);
     palmUp = leftOpen && v1.y < (steady.layers.shown ? L.palmUpDot + F.gestureSlack : L.palmUpDot);
-    backUp = leftOpen && v1.y > (steady.commands.shown ? C.backUpDot - F.gestureSlack : C.backUpDot);
+    const backRaw = v1.y > (steady.commands.shown ? C.backUpDot - F.gestureSlack : C.backUpDot);
+    // A fist made while the command card is up arms the SOS (as pressing the red bar once
+    // does: "Confirm" or a second press then sends it). The card stays up over the fist, so
+    // the armed bar and its countdown are seen. Held for a moment first: one frame in which
+    // the tracking loses the fingers is not a fist.
+    const fistOnCard = !leftOpen && backRaw && steady.commands.shown;
+    if (!fistOnCard) sosFistSince = null;
+    else {
+      sosFistSince ??= now;
+      if (!sosFistDone && now - sosFistSince >= HUD.sos.fistMs) {
+        sosFistDone = true; // once per fist
+        if (rescue.state().phase === 'idle') {
+          rescue.press();
+          clickSound();
+        }
+      }
+    }
+    if (leftOpen) sosFistDone = false;
+    backUp = (leftOpen || fistOnCard) && backRaw;
   }
   // The right hand's own two views (suit.js). While its emergency button is up, the left hand
   // is the one that points: its command card stays away so it does not pop up over the ray.
