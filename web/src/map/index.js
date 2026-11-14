@@ -43,11 +43,13 @@ let routePoints = [], routeBand = null, targetMarker = null, off = [], textures 
 // Waypoints the wearer marked (hud): id -> { id, label, cell }, and the marker of each on the map as it is built now.
 const marked = new Map(), markedMarkers = new Map();
 const lookDir = new THREE.Vector3();
-// The map goes where the palm goes, all of it in the hologram's circle. Close the hand into a
-// fist while it is up and it unfolds: `grown` times larger and out of its circle, so its
-// corners show too; open the hand and it folds back. (`zoom` enlarges the content under the
-// circle around the wearer: 1, the whole map, unless a test sets it.)
-let content = null, zoom = 1, me = null, laidFor = '', captionZoom = 1;
+// The map goes where the palm goes. In the headset the hologram's circle shows the part of it
+// around the wearer: `content` (the terrain and all that stands on it) is `zoom` times larger
+// than fits the circle (MAP.zoom; 1, the whole map, on a PC), with the wearer in the middle.
+// Close the hand into a fist while the map is up and it unfolds: the circle opens and the
+// whole map shows, at that same scale (only `grown` times larger), centred on itself: more
+// ground, not larger ground. Open the hand and it folds back.
+let content = null, zoom = 1, me = null, laidFor = '', captionZoom = 1, captionOpen = false;
 const unfold = { level: 0 };
 let unfolded = 0, grown = 1, fist = false, unfoldTest = null;
 const view = { zoom: { value: 1 }, shift: { value: new THREE.Vector2() } }; // for the fade of everything on the map
@@ -68,7 +70,8 @@ function lay(marker) {
 /** Enlarge and move the content for the zoom in use, and put everything on it in place again when that changed. */
 function applyZoom() {
   if (!content) return;
-  const f = Math.min(1, (zoom - 1) / 0.5); // the whole map (zoom 1) is centred on itself, an enlarged one on the wearer
+  // The whole map (zoom 1, or unfolded) is centred on itself, an enlarged part of it on the wearer.
+  const f = Math.min(1, (zoom - 1) / 0.5) * (1 - unfolded);
   const at = me ?? [0, 0, 0];
   content.scale.setScalar(zoom);
   content.position.set(-zoom * at[0] * f, (1 - zoom) * at[1] * f, -zoom * at[2] * f);
@@ -78,7 +81,7 @@ function applyZoom() {
   laidFor = key;
   for (const marker of placed.keys()) lay(marker);
   layRoute();
-  if (Math.abs(zoom - captionZoom) > 0.08 * captionZoom || (zoom === 1) !== (captionZoom === 1)) caption();
+  if (Math.abs(zoom - captionZoom) > 0.08 * captionZoom || (zoom === 1) !== (captionZoom === 1) || (unfolded > 0.5) !== captionOpen) caption();
 }
 function layRoute() {
   if (!routeBand) return;
@@ -89,10 +92,9 @@ function layRoute() {
 let forcedZoom = null; // PC testing: window.__map.zoom(2)
 /** How far the map is unfolded this frame (a fist under it), and the size it has grown to. */
 function setView(frame) {
-  zoom = forcedZoom ?? 1;
+  zoom = forcedZoom ?? (frame.session ? MAP.zoom : 1);
   unfolded = unfoldStep(unfold, unfoldTest ?? (!!frame.session && fist && root.visible), frame.dt);
-  // The PC view is already large: there it grows only a little, enough to see it happen.
-  grown = 1 + (MAP.unfoldScale - 1) * unfolded * (frame.session ? 1 : 0.35);
+  grown = 1 + (MAP.unfoldEnlarge - 1) * unfolded;
   root.scale.setScalar((frame.session ? 1 : MAP.desktopScale) * grown);
 }
 const position = new THREE.Vector3(), wristQuat = new THREE.Quaternion(), normal = new THREE.Vector3();
@@ -113,12 +115,12 @@ function makeLabel() { return makeCaption(root, 'map-caption'); }
 function placeCaption() { if (label) putCaption(label, root, ctx.camera, MAP.widthM); }
 function caption(note = '') {
   if (!label || !data) return;
-  captionZoom = zoom;
+  captionZoom = zoom; captionOpen = unfolded > 0.5;
   const layer = data.layerSet.layers.find(l => l.id === activeLayer);
   writeCaption(label, [
     `${data.layerSet.mock ? 'SYNTHETIC · ' : ''}${data.layerSet.site?.name ?? 'Terrain map'} · N ↑`,
     `${layer?.labelEn ?? layer?.label ?? 'Terrain'} · ${layer?.mission ?? ''} ${layer?.instrument ?? ''}`,
-    `Map extent ${transform.width} × ${transform.depth} m · ${transform.cellSizeM} m/cell · close your hand to unfold it`,
+    zoom > 1.02 && !captionOpen ? `Showing ${Math.round(transform.width / zoom / 10) * 10} m of ${transform.width} m around you · close your hand to see all of it` : `Map extent ${transform.width} × ${transform.depth} m · ${transform.cellSizeM} m/cell`,
     note || (activeLayer === 'thermal' ? 'Relative brightness · not temperature' : 'Teal: you · orange diamond: target · blue: waypoints · violet: route'),
     'Route distances use map metres. Display size does not affect planning.',
     layer?.credit ?? (data.layerSet.mock ? 'Synthetic example, not NASA observations' : 'Data sources: layerset.json'),

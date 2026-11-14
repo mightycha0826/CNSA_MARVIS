@@ -10,10 +10,11 @@
 //
 // In field mode (the second button on the start page)
 //   - The palm map shows FIELD.spanM of ground around the wearer, 1 : 80, and goes where the
-//     palm goes. Close the hand into a fist while the map is up and it unfolds: larger, out
-//     of its circle, showing all the ground the scan knows (the window and what lies beyond
-//     it, scan/index.js: knownBeyondWindow), still over the hand. Open the hand and it folds
-//     back. On it is only
+//     palm goes. Close the hand into a fist while the map is up and it unfolds: out of its
+//     circle and as far as the scan knows ground (the window and what lies beyond it,
+//     scan/index.js: knownBeyondWindow), at nearly the same scale, so the map gets wider, not
+//     the ground on it larger. It stays over the hand. Open the hand and it folds back. On it
+//     is only
 //     what the headset has scanned (`hazard:update` from scan/): clear floor and structure.
 //     Ground the headset knows nothing about is left empty, with no frame around the map.
 //     (It used to show the Mars image there, which read as floor that had been seen.)
@@ -68,10 +69,14 @@ export const WALK = {
 
 export const FIELD = {
   spanM: 24, // the palm map shows spanM x spanM of ground (it was 20, on a map a fifth smaller: the scale is the same, 1 : 80)
-  // Unfolded (a fist under the map): the whole known ground, with this margin around it,
-  // on a map this many times larger, the circle's fade opened this far (1 = none of it left).
+  // Unfolded (a fist under the map): the point is to see more ground, not the same ground
+  // larger. The map then covers what the circle showed and all known ground besides (with
+  // this margin around it), drawn unfoldEnlarge times larger than before, no more, unless
+  // that would make the map wider than unfoldMaxM: then the scale gives way.
+  // unfoldFade: how far the circle's fade opens (1 = none of it left).
   unfoldMarginM: 1.5,
-  unfoldScale: 2.2,
+  unfoldEnlarge: 1.15,
+  unfoldMaxM: 1.1,
   unfoldFade: 0.62,
   mapM: MAP.widthM, // size of the palm map (m): the same as the Mars map
   mapPx: 512,
@@ -152,12 +157,14 @@ function knownGround() {
     z0 = Math.min(z0, t.z);
     z1 = Math.max(z1, t.z + t.sizeM);
   }
-  // The wearer is on the map too, whatever is known.
-  x0 = Math.min(x0, head.x);
-  x1 = Math.max(x1, head.x);
-  z0 = Math.min(z0, head.z);
-  z1 = Math.max(z1, head.z);
-  return { cx: (x0 + x1) / 2, cz: (z0 + z1) / 2, span: Math.max(FIELD.spanM * 0.5, Math.max(x1 - x0, z1 - z0) + 2 * FIELD.unfoldMarginM) };
+  // With a margin around what is known, and never less than the map showed before it unfolded.
+  const m = FIELD.unfoldMarginM;
+  const half = FIELD.spanM / 2;
+  x0 = Math.min(x0 - m, head.x - half);
+  x1 = Math.max(x1 + m, head.x + half);
+  z0 = Math.min(z0 - m, head.z - half);
+  z1 = Math.max(z1 + m, head.z + half);
+  return { cx: (x0 + x1) / 2, cz: (z0 + z1) / 2, span: Math.max(x1 - x0, z1 - z0) };
 }
 let guiding = false;
 let route = { points: [], distanceM: 0, blocked: false };
@@ -904,8 +911,10 @@ export function update(frame) {
   const fit = known ?? { cx: head.x, cz: head.z, span: FIELD.spanM };
   span = FIELD.spanM + (fit.span - FIELD.spanM) * unfolded;
   viewAt = [head.x + (fit.cx - head.x) * unfolded, head.z + (fit.cz - head.z) * unfolded];
-  // The PC view is already large: there it grows only a little, enough to see it happen.
-  grown = 1 + (FIELD.unfoldScale - 1) * unfolded * (frame.session ? 1 : 0.35);
+  // The map grows with the ground it shows, so the scale stays (but for unfoldEnlarge): more
+  // ground, not larger ground. (The PC view is already large: there it grows only a little.)
+  const full = Math.min(FIELD.unfoldMaxM / FIELD.mapM, (fit.span / FIELD.spanM) * FIELD.unfoldEnlarge);
+  grown = 1 + (full - 1) * unfolded * (frame.session ? 1 : 0.35);
   fieldView.zoom.value = 1 - FIELD.unfoldFade * unfolded;
   palmMap.root.scale.setScalar((frame.session ? 1 : MAP.desktopScale) * grown);
   // Drawn again five times a second, and sooner while it unfolds or folds, so that glides.
