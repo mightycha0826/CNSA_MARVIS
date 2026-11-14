@@ -131,6 +131,7 @@ let run = `${page}-0`;
 let stored = null; // the hub's last map from another run, when it has these tiles: tileKey -> Uint8Array(tile)
 let storedWin = null; // the part of it under the window, as one grid; null when none of it is
 let trusted = false; // the stored map lines up with this session's scan and is being used
+let storedRun = null; // the run the stored map is of
 let toStore = false; // the map changed since it last went to the hub
 let lastStore = 0;
 // Only tiles that changed are sent, so this side keeps count of what the hub has of this run.
@@ -162,6 +163,7 @@ function reset() {
   // prove itself again. Ask the hub for its latest; the answer comes as map:stored.
   run = `${page}-${runNo++}`;
   trusted = false;
+  ctx.bus.emit('map:run', { run, trusted: false, storedRun });
   toStore = false;
   hubHas.clear();
   outbox.clear();
@@ -224,6 +226,7 @@ function takeStored(m) {
   const tiles = decodeTiles(m.tiles, TILES.cells);
   if (!tiles.size) return console.warn('[scan] the stored map from the hub has no tiles');
   stored = tiles;
+  storedRun = m.run ?? null;
   storedWin = storedUnder(originTile);
   trusted = false;
   dirty = true;
@@ -304,6 +307,9 @@ export function init(context) {
   // Mock mode: the fake obstacle grid stands in for the scan.
   if (ctx.mock.hazard) startMockHazard(ctx.bus, { speed: ctx.mock.speed });
   ctx.xr.onSessionStart(() => reset());
+  // The reference space was shifted onto the room's kept coordinates (core/room-frame.js):
+  // what was scanned in the first moments of the session is in the old ones.
+  ctx.xr.onRealign?.(() => reset());
   ctx.xr.onSessionEnd(() => { if (toStore) store(0); }); // the last changes, before the wearer takes the headset off
   ctx.bus.on('map:stored', takeStored);
   // With depth-sensing three.js would draw a mesh that hides every virtual object behind real
@@ -432,6 +438,8 @@ function send(time) {
     if (!trusted && linesUp(storedWin, merged, cols, cols)) {
       trusted = true;
       restDue = toStore = true; // its tiles outside the window belong to this run's map on the hub as well
+      // This run is in the coordinates of the stored one: what else was kept in them (the waypoints, hud/) fits too.
+      ctx.bus.emit('map:run', { run, trusted: true, storedRun });
       console.info('[scan] the stored map lines up with this room: using it for what is not seen yet');
     }
     if (trusted) {

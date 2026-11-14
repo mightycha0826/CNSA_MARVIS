@@ -1,9 +1,11 @@
-export const MAP = Object.freeze({ widthM: 0.25, desktopScale: 8, maxVerticesPerSide: 129,
+export const MAP = Object.freeze({
+  widthM: 0.3, // the hologram's width (it was 0.25): a wider view of either map
+  desktopScale: 8, maxVerticesPerSide: 129,
   desktopTiltRad: 0.55, palmUpDot: -0.35, holdMs: 200, followRate: 18, textureMaxSize: 2048,
-  // How much of the map shows follows where it is held (as on the field map): in the middle of
-  // the view all of it, off to the side a part around the wearer, up to zoomMax times larger.
-  // zoomAtDeg: the map's centre this far from the line of sight: [largest, whole map].
-  zoomMax: 4, zoomAtDeg: [34, 10], zoomRate: 5 });
+  // In the headset the map is shown `zoom` times larger than fits the hologram, so half of it
+  // is in view (1 km of 2), with the wearer in the middle; the palm slides the view over the
+  // rest (core/hologram.js: slideWithPalm). The PC view shows all of it.
+  zoom: 2 });
 // Published HUD legend colours; no import of another module's runtime.
 export const RAMPS = {
   topo: [[18, 42, 74], [32, 120, 128], [196, 170, 110], [250, 246, 232]],

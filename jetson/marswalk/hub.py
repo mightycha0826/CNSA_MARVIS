@@ -20,7 +20,7 @@ from pathlib import Path
 from aiohttp import WSMsgType, web
 
 from . import intents, speech
-from .maps import MapStore
+from .maps import MapStore, WaypointStore
 from .mirror import Mirror
 from .alerts import SUIT_TEMP_MESSAGES, SuitTempAlert, Thresholds
 from .sensors import SuitTemp
@@ -61,6 +61,7 @@ class Hub:
         self.active_alerts: dict[str, dict] = {}
         self.tts_lock = asyncio.Lock()
         self.maps = MapStore(Path(args.maps_dir))
+        self.waypoints = WaypointStore(Path(args.maps_dir))
         self.mirror = Mirror()
         self.mirror.extra = lambda: {"rescue": self.rescue}
         self.rescue: dict | None = None   # the rescue signal that is up, if any
@@ -326,6 +327,19 @@ class Hub:
                             log.info("storing the field map of run %s in %s", p.get("run"), path.name)
                 elif type_ == "rescue.signal":
                     await self.handle_rescue(ws, peer, p)
+                elif type_ == "waypoints.store":
+                    # The places the wearer marked: kept beside the maps for the next session.
+                    try:
+                        kept = await asyncio.to_thread(self.waypoints.save, p)
+                    except (ValueError, OSError) as err:
+                        log.warning("waypoints from %s not stored: %s", peer, err)
+                    else:
+                        log.info("stored %d waypoints from %s", len(kept["items"]), peer)
+                elif type_ == "waypoints.request":
+                    # Always answered, also with an empty list: the headset sends what it has
+                    # marked while the link was down only after it has seen what is kept here.
+                    kept = await asyncio.to_thread(self.waypoints.stored)
+                    await ws.send_str(envelope("waypoints.stored", kept or {"items": [], "count": 0}))
                 elif type_ == "map.request":
                     stored = self.maps.stored()   # the newest run, every tile of it
                     if stored:

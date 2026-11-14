@@ -104,9 +104,15 @@ let leftOpen = false; // the left hand is held open: only then does it bring a m
 // Every button can be spoken: "Navigate", "Waypoint", "Record", "Confirm", "Delete", "Cancel".
 let pick = null; // while the card is up: { cell: [col, row], note, kind, id } on the Mars map, { room: [x, z], kind, id } on the field map
 // The places the wearer marked: id -> { id, label, room: [x, z] } (field map) or { id, label, cell } (Mars map).
-// They live for the session: a field waypoint is a place of the room, and the room's frame starts over with each session.
+// They are kept on the Jetson (waypoints:store) and come back in the next session
+// (waypoints:stored). A waypoint of the Mars map is a cell of the data and fits at once. One
+// of the field map is a place in room coordinates, and those are only the same as before when
+// the scan has found itself in the stored map (map:run, trusted): until then it waits in
+// `shelved`, unseen. `runs`: the scan runs whose coordinates it is known to fit.
 const waypoints = new Map();
 let waypointCount = 0;
+let shelved = []; // field waypoints that are not shown: [{ id, label, room, runs }]
+const scan = { run: null, trusted: false, storedRun: null }; // the scan's run and whether it trusts the stored map (scan/index.js)
 // A waypoint that was just set and may be given a name: { id, until, listening, listenUntil, token }.
 // Its two buttons are on the card over the map and, since "Mark waypoint" is pressed on the
 // command card (where the map is not in view), on the command card too.
@@ -253,6 +259,80 @@ const SOS_ID = '__sos';
 const NAMING_PREFIX = '__name:'; // the naming buttons on the command card ("Confirm" is also a command's name)
 
 const onField = () => mode.current === 'field';
+
+/** The whole list to the hub: what is shown, and what waits for a session in which it fits. */
+function saveWaypoints() {
+  const items = [];
+  for (const w of waypoints.values()) {
+    if (w.cell) items.push({ id: w.id, label: w.label, cell: w.cell });
+    else items.push({ id: w.id, label: w.label, room: w.room, runs: runsOf(w) });
+  }
+  ctx.bus.emit('waypoints:store', { items: [...items, ...shelved], count: waypointCount });
+}
+/** The runs a field waypoint fits: those it had, and the one it is shown in now. */
+const runsOf = (w) => [...new Set([...(w.runs ?? []), scan.run].filter(Boolean))].slice(-8);
+
+/** The room's coordinates changed (a new session, a recentre): the field waypoints are put aside, not deleted. */
+function shelveRoomWaypoints() {
+  for (const w of [...waypoints.values()]) {
+    if (!w.room) continue;
+    shelved = shelved.filter((d) => d.id !== w.id).concat({ id: w.id, label: w.label, room: w.room, runs: runsOf(w) });
+    waypoints.delete(w.id);
+    ctx.bus.emit('waypoint:remove', { id: w.id });
+  }
+}
+
+/** Show the shelved field waypoints that fit the coordinates in use: those of run `fits`. */
+function unshelve(fits) {
+  if (!fits) return;
+  const back = shelved.filter((d) => d.runs?.includes(fits));
+  if (!back.length) return;
+  shelved = shelved.filter((d) => !back.includes(d));
+  for (const d of back) {
+    const w = { id: d.id, label: d.label, room: d.room, runs: d.runs };
+    waypoints.set(w.id, w);
+    ctx.bus.emit('waypoint:set', w);
+  }
+  saveWaypoints(); // they now fit this run too
+  showToast(`${back.length} waypoint${back.length > 1 ? 's' : ''} from last time`);
+}
+
+/** The scan says which run it is in, and whether the stored map (and so the stored waypoints) fits it. */
+function onScanRun({ run, trusted, storedRun }) {
+  if (run !== scan.run) {
+    shelveRoomWaypoints(); // new coordinates; tagged with the run they were in
+    scan.run = run;
+  }
+  scan.trusted = !!trusted;
+  scan.storedRun = storedRun ?? null;
+  if (scan.trusted) unshelve(scan.storedRun);
+}
+
+/** The hub's list from earlier sessions. */
+function onStoredWaypoints({ items, count }) {
+  if (!Array.isArray(items)) return;
+  waypointCount = Math.max(waypointCount, Number.isInteger(count) ? count : 0);
+  let added = 0;
+  for (const it of items) {
+    if (!it?.id || waypoints.has(it.id)) continue;
+    if (Array.isArray(it.cell)) {
+      const w = { id: it.id, label: it.label ?? '', cell: it.cell };
+      waypoints.set(w.id, w);
+      ctx.bus.emit('waypoint:set', w);
+      added++;
+    } else if (Array.isArray(it.room)) {
+      shelved = shelved.filter((d) => d.id !== it.id).concat({ id: it.id, label: it.label ?? '', room: it.room, runs: Array.isArray(it.runs) ? it.runs : [] });
+    }
+  }
+  if (added && !onField()) showToast(`${added} waypoint${added > 1 ? 's' : ''} from last time`);
+  // The link came back within this run, or the scan already trusts the stored map.
+  unshelve(scan.run);
+  if (scan.trusted) unshelve(scan.storedRun);
+  // What was marked or renamed while the link was down is not on the hub yet: now that its
+  // list is merged in, send ours.
+  const kept = new Map(items.map((it) => [it?.id, it?.label ?? '']));
+  if ([...waypoints.values(), ...shelved].some((w) => kept.get(w.id) !== w.label)) saveWaypoints();
+}
 const wpOf = (id) => waypoints.get(id) ?? null;
 const here = (w) => (onField() ? w.room : w.cell); // a waypoint of the other map has no place on this one
 
@@ -387,9 +467,11 @@ function navigatePick() {
 /** Mark a place: { room } on the field map, { cell } on the Mars map. The waypoint then waits for its name. */
 function addWaypoint(place) {
   const n = ++waypointCount;
-  const w = { id: `wp${n}`, label: `Waypoint ${n}`, ...(place.room ? { room: [place.room[0], place.room[1]] } : { cell: [place.cell[0], place.cell[1]] }) };
+  // The id must not meet one from an earlier session (the stored list may arrive later).
+  const w = { id: `wp-${Date.now().toString(36)}-${n}`, label: `Waypoint ${n}`, ...(place.room ? { room: [place.room[0], place.room[1]] } : { cell: [place.cell[0], place.cell[1]] }) };
   waypoints.set(w.id, w);
   ctx.bus.emit('waypoint:set', w);
+  saveWaypoints();
   naming = { id: w.id, until: performance.now() + HUD.pick.namingMs, listening: false, listenUntil: 0, token: 0 };
   setPick({ ...(w.room ? { room: w.room } : { cell: w.cell, note: '' }), kind: 'waypoint', id: w.id });
   dirty.commands = true;
@@ -454,6 +536,7 @@ function onDictation({ id, text, unavailable }) {
   if (w) {
     w.label = label;
     ctx.bus.emit('waypoint:set', w);
+    saveWaypoints();
     showToast(`Waypoint: “${label}”`);
   }
   endNaming();
@@ -467,6 +550,7 @@ function deletePicked() {
     if (naming?.id === pick.id) endNaming(false);
     waypoints.delete(pick.id);
     ctx.bus.emit('waypoint:remove', { id: pick.id });
+    saveWaypoints();
     showToast(`${w?.label ?? 'Waypoint'} deleted`);
   } else if (pick.kind === 'target') {
     if (pick.room) ctx.bus.emit('field:target', { point: null });
@@ -854,17 +938,18 @@ function wire(bus) {
   bus.on('nav:position', ({ point }) => {
     lastMapPoint = point;
   });
-  // A new session: the room's frame starts over, so the places marked in the room are gone.
-  // (Waypoints on the Mars map are cells of the data and stay.)
-  ctx.xr.onSessionStart(() => {
+  // A new session, or the reference space shifted onto the room's kept coordinates
+  // (core/room-frame.js): the places marked in the room are put aside until the scan has found
+  // itself in the stored map. (Waypoints on the Mars map are cells of the data and stay.)
+  const newRoomCoordinates = () => {
     endNaming(false);
     clearPick();
-    for (const w of [...waypoints.values()]) {
-      if (!w.room) continue;
-      waypoints.delete(w.id);
-      bus.emit('waypoint:remove', { id: w.id });
-    }
-  });
+    shelveRoomWaypoints();
+  };
+  ctx.xr.onSessionStart(newRoomCoordinates);
+  ctx.xr.onRealign?.(newRoomCoordinates);
+  bus.on('map:run', onScanRun);
+  bus.on('waypoints:stored', onStoredWaypoints);
   // "Base" is a Mars-map command: the menu follows the mode.
   bus.on('app:mode', () => {
     endNaming(false);
@@ -1233,7 +1318,7 @@ export function init(context) {
     suit,
     rescue,
     /** Marked places and the pick card: for tests and the console. */
-    marks: () => ({ pick, naming: naming && { ...naming }, waypoints: [...waypoints.values()], card: pick ? pickVM() : null }),
+    marks: () => ({ pick, naming: naming && { ...naming }, waypoints: [...waypoints.values()], shelved: [...shelved], scan: { ...scan }, card: pick ? pickVM() : null }),
     pressMark,
     selectPlace,
     selectPoint,

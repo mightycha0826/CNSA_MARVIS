@@ -9,6 +9,7 @@
 //                      layer.show               → layer:toggle
 //   tts.begin / binary / tts.end → played by voice.js
 //   map.stored     → map:stored         (the field map the hub stored last, for scan/)
+//   waypoints.stored → waypoints:stored (the places marked in earlier sessions, for hud/)
 //   rescue.state   → rescue:state       (what became of this headset's rescue signal)
 //   voice.dictation → voice:dictation   { id, text }: what was said after voice:dictate (a waypoint's name)
 //
@@ -16,6 +17,7 @@
 //   연결 직후 hello, 브라우저의 voice:say → voice.say,
 //   mode:change·nav:route가 바뀌면 state,
 //   map:store → map.store (the field map, kept on the Jetson's disk), map:request → map.request,
+//   waypoints:store → waypoints.store (the marked places; asked back with waypoints.request on connecting),
 //   rescue:signal → rescue.signal (the emergency button),
 //   voice:dictate { on, id } → voice.dictate (the next thing said comes back as text, not as a command),
 //   a continuous microphone stream (mic.begin + binary) and voice.status (voice.js)
@@ -67,6 +69,9 @@ export function handleMessage(msg) {
       break;
     case 'map.stored':
       bus.emit('map:stored', payload);
+      break;
+    case 'waypoints.stored':
+      bus.emit('waypoints:stored', payload);
       break;
     case 'voice.dictation':
       bus.emit('voice:dictation', { id: payload.id, text: String(payload.text ?? '') });
@@ -158,6 +163,7 @@ function connect() {
     send('hello', { client: 'quest', mock: false });
     send('state', state);
     send('map.request', {}); // the field map the hub stored last (scan/memory.js)
+    send('waypoints.request', {}); // and the places that were marked (hud/)
     voiceLinkOpened();
     flushDiag();
   };
@@ -202,6 +208,8 @@ export async function initLink(xr) {
   // The field map goes to the hub's disk; a map that cannot be sent now is sent with the next change.
   bus.on('map:store', (map) => send('map.store', map));
   bus.on('map:request', () => send('map.request', {}));
+  // The marked places go to the hub's disk whenever they change, and come back when it connects.
+  bus.on('waypoints:store', (list) => send('waypoints.store', list));
   // The emergency button (hud/suit.js). The hub tells the other headsets and answers rescue.state.
   bus.on('rescue:signal', (signal) => send('rescue.signal', signal));
   // The name of a waypoint is spoken (hud): the hub sends the next utterance back as text.
