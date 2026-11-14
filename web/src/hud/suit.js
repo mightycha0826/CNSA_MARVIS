@@ -41,7 +41,8 @@
 // and if it cannot be, a stand-in built here from smooth solids is shown.
 //
 // It comes up over the palm the way everything a hand brings up does (core/hologram.js:
-// popIn), and goes at once when the hand closes, turns away or points.
+// popIn). When the hand closes into a fist, is turned over, or is lost from view, it does not
+// just vanish: it swells a little and collapses where it stood, in a fifth of a second.
 //
 // Receives: telemetry:update
 
@@ -54,6 +55,10 @@ import { makeBeam, floatOverPalm, popIn, popScale } from '../core/hologram.js';
 import { drawVitalChip } from './draw.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import modelUrl from '../../../artifacts/hud-male/hud_male_blue.glb?url';
+const SHRINK_S = 0.2; // going away: this long
+/** Ease "back in": a little the wrong way first, then all the way: 0 -> 1 with a dip to about -0.1. */
+const backIn = (t) => 2.70158 * t * t * t - 1.70158 * t * t;
+
 const HOLO = '#7fd4ff'; // the figure when all is well
 const Y = new THREE.Vector3(0, 1, 0);
 
@@ -480,6 +485,29 @@ export function createSuit(ctx) {
   const floatState = { shownSince: null };
   let pinned = false; // PC: shown without a hand
   const comeUp = {}; // the pop it comes up with (core/hologram.js)
+  let up = false; // the hand holds it up (it may still be seen for a moment after, shrinking)
+  let goneSince = null; // since when it has been shrinking away, or null
+
+  /** The hand no longer holds it up: shrink it away where it stood, then hide it. */
+  function leave(now) {
+    if (up) {
+      up = false;
+      goneSince = now;
+      popIn(comeUp, false, now);
+    }
+    if (goneSince == null) return;
+    const t = (now - goneSince) / 1000 / SHRINK_S;
+    if (t >= 1) {
+      goneSince = null;
+      root.visible = false;
+      root.scale.setScalar(1);
+      return;
+    }
+    const k = Math.max(0.001, 1 - backIn(t)); // swells a little, then collapses
+    root.visible = true; // where it was: it does not follow the hand any more
+    beam.visible = false;
+    root.scale.set(k, k ** 1.6, k); // squeezed flat faster than it narrows
+  }
 
   const colourOf = (state) => (state === 'crit' ? T.dangerLine : state === 'warn' ? T.point : HOLO);
   const show = (v, digits) => (v == null ? '—' : v.toFixed(digits));
@@ -545,8 +573,12 @@ export function createSuit(ctx) {
    */
   function place(frame, allowed) {
     if (pinned) return;
+    const now = performance.now();
     const shown = floatOverPalm(root, beam, frame, ctx.camera, palmState, floatState, { holdMs: K.holdMs, followRate: K.followRate, widthM: K.plateM, hand: 'right', allowed });
-    popScale(root, 1, popIn(comeUp, shown, performance.now())); // it springs up; it goes at once
+    if (!shown) return leave(now); // a fist, the hand turned over, or the left hand's veto
+    up = true;
+    goneSince = null;
+    popScale(root, 1, popIn(comeUp, true, now)); // it springs up
   }
 
   /** Every frame: turn the figure, let the simulated readings breathe, redraw what changed. */
@@ -580,9 +612,12 @@ export function createSuit(ctx) {
     /** No right hand in view (or no hands at all): the hologram goes, unless pinned. */
     hide() {
       if (pinned) return;
-      root.visible = false;
-      popIn(comeUp, false, 0);
+      leave(performance.now());
     },
+    /** The hologram is up: its readings are shown here and leave the status tiles (index.js). */
+    isOpen: () => (pinned ? root.visible : up),
+    /** Where it is in the room (the status tiles fly to it and from it). */
+    position: (out) => out.copy(root.position),
     /** The headset's battery in percent, or null (for the rescue signal). */
     battery: () => reading.battery,
     /** The readings as they are now, and which of them are out of range ('' | 'warn' | 'crit'): the status card shows some of them. */

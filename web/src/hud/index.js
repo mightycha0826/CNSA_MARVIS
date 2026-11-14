@@ -34,7 +34,7 @@ import { createRescue } from './rescue.js';
 import { handOpen } from '../core/palm.js';
 import { popIn } from '../core/hologram.js';
 import { walkableNear, reachableFrom } from '../core/waypoints.js';
-import { choose, importance, trend } from './importance.js';
+import { choose, importance, trend, whileVitalsOpen } from './importance.js';
 import { createDash } from './dash.js';
 import { sizeOf } from './layout.js';
 import { pickOnMap, mapCellInRoom, showPick, cellOfMapPoint, mapTargetCell, mapZoom } from '../map/index.js';
@@ -145,6 +145,19 @@ const tipped = new THREE.Vector3(); // the pointer's ray as it is used on the ma
 let lastSosDraw = 0;
 let mapPointed = false; // the right hand's pointer is on the map this frame
 let suit = null; // the right hand: the vitals hologram over the palm (suit.js)
+let vitalsOpen = false; // it is up: its readings are not on the status tiles
+let vitalsFlipAt = -Infinity; // when it last opened or closed
+let vitalsAt = null; // where it is on the HUD's stage, [x, y] in degrees (as the tiles are placed)
+const VITALS_TILES = new Set(['o2', 'ambient', 'heart', 'body', 'pressure']);
+
+/** A place in the room as a place on the HUD's stage, [x, y] in degrees as the tiles use them, or null when it is not in front of the wearer. */
+function onStage(world) {
+  const p = cards.worldToLocal(v2.copy(world));
+  if (!(p.z < -0.05)) return null;
+  const k = -HUD.distanceM / p.z; // onto the plane the tiles are on
+  const half = HUD.stage.wDeg / 2;
+  return [Math.max(-half, Math.min(half, (p.x * k) / UNIT)), Math.max(0, Math.min(HUD.stage.hDeg, HUD.stage.hDeg / 2 - (p.y * k) / UNIT))];
+}
 // Test hook: keep the command menu up without a hand (PC).
 let commandsPinned = false;
 let audio = null;
@@ -732,14 +745,14 @@ function statusVM() {
       marks: [{ at: HUD.suit.battery.crit / 100 }, { at: HUD.suit.battery.warn / 100 }], lowIsBad: true,
     },
     {
-      id: 'o2', pinned: true, label: 'Oxygen', value: num(r.o2), unit: '%', tag: 'sim',
+      id: 'o2', pinned: true, inVitals: true, label: 'Oxygen', value: num(r.o2), unit: '%', tag: 'sim',
       state: z.o2, fill: fill(r.o2, 0, 100),
       marks: [{ at: HUD.suit.o2.crit / 100 }, { at: HUD.suit.o2.warn / 100 }], lowIsBad: true,
     },
     {
       // The sensor on the suit: the air around the wearer. As soon as its alert sounds (warn or
       // critical) the tile comes to the middle (layout.js: focus), where it cannot be missed.
-      id: 'ambient', pinned: true, label: S.suit, value: num(t, 1), unit: '°C',
+      id: 'ambient', pinned: true, inVitals: true, label: S.suit, value: num(t, 1), unit: '°C',
       tag: linkLost ? S.lastValue : state.suit.source === 'mock' ? 'mock' : null,
       state: linkLost || t === null ? 'stale' : suitAlert?.level === 'critical' ? 'crit' : suitAlert ? 'warn' : '',
       focus: !!suitAlert,
@@ -771,14 +784,18 @@ function statusVM() {
       word: nav.status === 'blocked' ? S.blocked : '', state: nav.status === 'blocked' ? 'warn' : '',
       fill: nav.status === 'ok' && routeFrom > 0 ? 1 - nav.distanceM / routeFrom : 0,
     },
-    { id: 'heart', base: R.heart.base, viz: 'graph', label: 'Heart rate', value: num(r.heart), unit: 'bpm', tag: 'sim', state: z.heart, lines: [HUD.suit.heart.warnLow, HUD.suit.heart.warnHigh], ...graph('heart', R.heart.bad, R.heart.span) },
-    { id: 'body', base: R.body.base, viz: 'graph', label: 'Body temp', value: num(r.torsoC, 1), unit: '°C', tag: 'sim', state: z.temp, lines: [HUD.suit.bodyTemp.warnLow, HUD.suit.bodyTemp.warnHigh], ...graph('body', R.body.bad, R.body.span) },
+    { id: 'heart', inVitals: true, base: R.heart.base, viz: 'graph', label: 'Heart rate', value: num(r.heart), unit: 'bpm', tag: 'sim', state: z.heart, lines: [HUD.suit.heart.warnLow, HUD.suit.heart.warnHigh], ...graph('heart', R.heart.bad, R.heart.span) },
+    { id: 'body', inVitals: true, base: R.body.base, viz: 'graph', label: 'Body temp', value: num(r.torsoC, 1), unit: '°C', tag: 'sim', state: z.temp, lines: [HUD.suit.bodyTemp.warnLow, HUD.suit.bodyTemp.warnHigh], ...graph('body', R.body.bad, R.body.span) },
     { id: 'radiation', base: R.radiation.base, viz: 'graph', label: S.radiation, value: num(e?.radiationUGyPerDay), unit: S.radUnit, tag: e?.radiationIsFixedValue ? S.published : null, state: radAlert ? (radAlert.level === 'critical' ? 'crit' : 'warn') : '', active: e?.radiationUGyPerDay != null, ...graph('radiation', R.radiation.bad) },
-    { id: 'pressure', base: R.pressure.base, viz: 'graph', label: 'Suit pressure', value: num(r.pressureKpa, 1), unit: 'kPa', tag: 'sim', state: z.pressure, lines: [HUD.suit.pressureKpa.warnLow, HUD.suit.pressureKpa.warnHigh], ...graph('pressure', R.pressure.bad, R.pressure.span) },
+    { id: 'pressure', inVitals: true, base: R.pressure.base, viz: 'graph', label: 'Suit pressure', value: num(r.pressureKpa, 1), unit: 'kPa', tag: 'sim', state: z.pressure, lines: [HUD.suit.pressureKpa.warnLow, HUD.suit.pressureKpa.warnHigh], ...graph('pressure', R.pressure.bad, R.pressure.span) },
     { id: 'airTemp', base: R.airTemp.base, viz: 'graph', label: S.airTemp, value: num(e?.airTempK != null ? e.airTempK - 273.15 : null, 1), unit: '°C', state: '', active: e?.airTempK != null, ...graph('airTemp', R.airTemp.bad) },
     { id: 'airPressure', base: R.airPressure.base, viz: 'graph', label: S.pressure, value: num(e?.pressurePa), unit: 'Pa', state: '', active: e?.pressurePa != null, ...graph('airPressure', R.airPressure.bad) },
   ];
-  const { ranked } = choose([...pinned, ...others], rankedShown);
+  // While the vitals hologram is open it shows its readings itself: they leave the tiles
+  // (unless critical or in focus), and come back by the ranking when it closes (importance.js).
+  const candidates = whileVitalsOpen([...pinned, ...others], vitalsOpen);
+  const pinnedShown = candidates.filter((m) => m.pinned);
+  const { ranked } = choose(candidates, rankedShown);
   rankedShown = ranked.map((m) => m.id);
   // The order on the dashboard: the pinned ones first, in their fixed order, then the others,
   // those out of range before the rest. Within that they keep the places they have, so tiles
@@ -786,14 +803,14 @@ function statusVM() {
   const tier = (m) => (m.state === 'crit' ? 2 : m.state === 'warn' ? 1 : 0);
   const order = [...ranked].sort((a, b) => tier(b) - tier(a) || ranked.indexOf(a) - ranked.indexOf(b));
   const H = HUD.dash.hDeg;
-  const readings = [...pinned.map((m) => ({ ...m, viz: 'bar' })), ...order].map((m) => ({
+  const readings = [...pinnedShown.map((m) => ({ ...m, viz: 'bar' })), ...order].map((m) => ({
     ...m,
     hDeg: H[m.viz],
     scale: sizeOf({ ...m, score: importance(m) }, HUD.dash.size), // what matters more is drawn larger
     // What the tile shows, as text: it is drawn again only when this changes.
     sig: [m.label, m.value, m.unit, m.tag, m.word, m.state, m.fill?.toFixed(3), m.history?.length, m.history?.at(-1), m.min, m.max].join('|'),
   }));
-  return { readings, pinned, ranked: order, scores: others.map((m) => [m.id, importance(m)]) };
+  return { readings, pinned: pinnedShown, ranked: order, scores: others.map((m) => [m.id, importance(m)]) };
 }
 
 function sortedAlerts() {
@@ -1464,6 +1481,15 @@ export function update(frame) {
     wash.material.opacity = washOpacity;
   }
 
+  // The vitals hologram opening or closing changes what the tiles show: its readings go to
+  // it and come back from it, flying (dash.flow), for a moment around the change.
+  if (suit.isOpen() !== vitalsOpen) {
+    vitalsOpen = !vitalsOpen;
+    vitalsFlipAt = now;
+    dirty.status = true;
+  }
+  if (vitalsOpen) vitalsAt = onStage(suit.position(v1)) ?? vitalsAt;
+  dash.flow(now - vitalsFlipAt < HUD.dash.flowMs && vitalsAt ? { x: vitalsAt[0], y: vitalsAt[1], ids: VITALS_TILES } : null);
   if (dirty.status) {
     dash.set(statusVM().readings);
     dirty.status = false;

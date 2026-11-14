@@ -69,3 +69,17 @@ export function choose(metrics, shownIds = [], K = IMPORTANCE) {
   for (let i = 0; i < ranked.length; i++) ranked[i] ??= fresh.shift();
   return { pinned, ranked };
 }
+
+/**
+ * The readings while the vitals hologram is open over the right palm. It shows some of them
+ * itself (`inVitals`), larger and with the figure: those leave the tiles, so nothing is shown
+ * twice, and the places they free go to whatever ranks next. One that is critical, or in focus
+ * (it has come to the middle with an alarm), stays: that must not depend on a hand being held
+ * up. When the hologram closes the readings are candidates again, and the usual ranking says
+ * which of them come back.
+ */
+export function whileVitalsOpen(metrics, open) {
+  if (!open) return metrics;
+  const covered = (m) => m.inVitals && m.state !== 'crit' && !m.focus;
+  return metrics.filter((m) => !(m.pinned && covered(m))).map((m) => (covered(m) ? { ...m, active: false } : m));
+}
