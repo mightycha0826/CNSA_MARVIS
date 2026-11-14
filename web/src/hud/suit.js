@@ -42,8 +42,8 @@
 //
 // Folding it away: close the hand into a fist while the vitals are up, and they are squeezed
 // down toward the wrist (a quick swell, then the collapse) and rings close around the wrist in
-// their place (bracelet.js), with a watch on the back of the fist. Open the hand palm up and
-// they unfold again with a small bounce. A hand that is merely turned away, or that points,
+// their place (bracelet.js). Open the hand palm up and the rings fly open as the vitals unfold
+// again with a small bounce. A hand that is merely turned away, or that points,
 // hides them at once as before.
 //
 // Receives: telemetry:update
@@ -65,7 +65,7 @@ const FOLD = {
   openS: 0.45, // the unfolding, bounce included
   ringsFrom: 0.55, // the rings start closing this far into the collapse
   lostMs: 600, // rings on a wrist that is not tracked for this long are let go
-  openedMs: 350, // and so are rings on a hand that has been open (but not palm up) this long
+  openedMs: 500, // and so are rings on a hand that has been open, and not palm up, this long
 };
 /** Ease "back in": a little the wrong way first, then all the way: 0 -> 1 with a dip to about -0.1. */
 const backIn = (t) => 2.70158 * t * t * t - 1.70158 * t * t;
@@ -561,8 +561,9 @@ export function createSuit(ctx) {
         fold.openSince = null;
       }
     } else if (fold.phase === 'rings') {
-      // The rings are worn while the fist is held.
-      if (haveWrist && !fist) fold.openSince ??= now;
+      // The rings are worn while the fist is held. A hand that opens palm up is on its way to
+      // the vitals (they come up after their short hold, with the unfolding): the rings wait for that.
+      if (haveWrist && !fist && !palmState.palmUp) fold.openSince ??= now;
       else fold.openSince = null;
       if (now - fold.seen > FOLD.lostMs || (fold.openSince != null && now - fold.openSince > FOLD.openedMs)) fold.phase = 'off';
     }
@@ -666,7 +667,7 @@ export function createSuit(ctx) {
       bracelet.status(worst(...Object.entries(suitStates(reading, HUD.suit)).map(([key, state]) => (key === 'battery' ? '' : state))));
     }
     if (!pinned && fold.phase === 'rings' && now - fold.seen > FOLD.lostMs) fold.phase = 'off';
-    bracelet.update(haveWrist ? wrist : null, ringsOn(now), ctx.camera, now / 1000, dt);
+    bracelet.update(haveWrist ? wrist : null, ringsOn(now), now / 1000, dt);
     if (!root.visible) return;
     figure.spinner.rotation.y += (dt * Math.PI * 2) / K.turnS;
     if (dirty) redraw();
@@ -725,13 +726,13 @@ export function createSuit(ctx) {
       dirty = true;
     },
     /**
-     * PC: play the fold without a hand. fold('close') makes a fist under the pinned hologram,
-     * fold('watch') turns the back of that fist to the camera, fold('open') opens the hand again.
+     * PC: play the fold without a hand. fold('close') makes a fist under the pinned hologram
+     * (the wrist's axis toward the camera's right, so the rings are seen from the side),
+     * fold('open') opens the hand again.
      */
     fold(what) {
       const now = performance.now();
       if (what === 'open') {
-        haveWrist = false;
         fold.phase = 'opening';
         fold.since = now;
         root.visible = true;
@@ -743,12 +744,9 @@ export function createSuit(ctx) {
         demoSince = now;
         return;
       }
-      // A wrist below the hologram, its back (+y) up; for the watch, its back toward the camera.
+      // A wrist below the hologram, the forearm (the joint's z) running across the view.
       wrist.position.copy(root.position).add(new THREE.Vector3(0, -0.25, 0));
-      if (what === 'watch') {
-        const toEye = ctx.camera.getWorldPosition(new THREE.Vector3()).sub(wrist.position).normalize();
-        wrist.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), toEye);
-      } else wrist.quaternion.identity();
+      wrist.quaternion.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 2.6);
       haveWrist = true;
       fold.seen = now + 1e9; // stays "tracked"
       if (fold.phase !== 'rings') {
