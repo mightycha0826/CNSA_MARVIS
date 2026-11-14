@@ -40,6 +40,12 @@
 // the torso is the rest. The file comes with the app (the hub serves it); until it has loaded,
 // and if it cannot be, a stand-in built here from smooth solids is shown.
 //
+// Folding it away: close the hand into a fist while the vitals are up, and they are squeezed
+// down toward the wrist (a quick swell, then the collapse) and rings close around the wrist in
+// their place (bracelet.js), with a watch on the back of the fist. Open the hand palm up and
+// they unfold again with a small bounce. A hand that is merely turned away, or that points,
+// hides them at once as before.
+//
 // Receives: telemetry:update
 
 import * as THREE from 'three';
@@ -51,6 +57,18 @@ import { makeBeam, floatOverPalm } from '../core/hologram.js';
 import { drawVitalChip } from './draw.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import modelUrl from '../../../artifacts/hud-male/hud_male_blue.glb?url';
+import { createBracelet, pop } from './bracelet.js';
+
+// Folding the vitals into the wrist rings and back.
+const FOLD = {
+  closeS: 0.26, // the collapse
+  openS: 0.45, // the unfolding, bounce included
+  ringsFrom: 0.55, // the rings start closing this far into the collapse
+  lostMs: 600, // rings on a wrist that is not tracked for this long are let go
+  openedMs: 350, // and so are rings on a hand that has been open (but not palm up) this long
+};
+/** Ease "back in": a little the wrong way first, then all the way: 0 -> 1 with a dip to about -0.1. */
+const backIn = (t) => 2.70158 * t * t * t - 1.70158 * t * t;
 
 const HOLO = '#7fd4ff'; // the figure when all is well
 const Y = new THREE.Vector3(0, 1, 0);
@@ -477,6 +495,79 @@ export function createSuit(ctx) {
   const palmState = makePalmState();
   const floatState = { shownSince: null };
   let pinned = false; // PC: shown without a hand
+  // The wrist rings and the watch, and where the vitals are between shown and folded away:
+  // 'off' | 'vitals' | 'closing' | 'rings' | 'opening'.
+  const bracelet = createBracelet(ctx.scene);
+  const wrist = { position: new THREE.Vector3(), quaternion: new THREE.Quaternion() };
+  let haveWrist = false;
+  const fold = { phase: 'off', since: 0, from: new THREE.Vector3(), seen: 0, openSince: null };
+  let lastLevel = 0;
+
+  /** The right wrist joint for this frame, if the hand is tracked. */
+  function readWrist(frame) {
+    haveWrist = false;
+    if (!frame.xrFrame?.getJointPose || !frame.session || !frame.refSpace) return;
+    for (const source of frame.session.inputSources) {
+      if (source.handedness !== 'right' || !source.hand) continue;
+      const pose = frame.xrFrame.getJointPose(source.hand.get('wrist'), frame.refSpace);
+      if (!pose) return;
+      const { position: p, orientation: o } = pose.transform;
+      wrist.position.set(p.x, p.y, p.z);
+      wrist.quaternion.set(o.x, o.y, o.z, o.w);
+      haveWrist = true;
+      return;
+    }
+  }
+
+  /** One frame of the fold, given whether the vitals are up (`shown`) and whether the hand is a fist. */
+  function stepFold(shown, fist, now) {
+    if (haveWrist) fold.seen = now;
+    if (shown) {
+      fold.openSince = null;
+      if (fold.phase === 'rings' || fold.phase === 'closing') {
+        fold.phase = 'opening';
+        fold.since = now;
+      } else if (fold.phase === 'off') fold.phase = 'vitals';
+      if (fold.phase === 'opening') {
+        const t = (now - fold.since) / 1000;
+        if (t >= FOLD.openS) fold.phase = 'vitals';
+        else {
+          // Out of the wrist: up from nothing, a little too large, and back.
+          const k = Math.max(0.001, pop(t));
+          root.scale.set(k, k * k, k);
+          return;
+        }
+      }
+      root.scale.setScalar(1);
+      return;
+    }
+    if (fold.phase === 'vitals' || fold.phase === 'opening') {
+      if (fist) {
+        fold.phase = 'closing';
+        fold.since = now;
+        fold.from.copy(root.position);
+      } else fold.phase = 'off'; // turned away, or pointing: gone at once, no rings
+    }
+    if (fold.phase === 'closing') {
+      const t = Math.min(1, (now - fold.since) / 1000 / FOLD.closeS);
+      const k = Math.max(0, 1 - backIn(t)); // swells a little, then collapses
+      root.visible = t < 1;
+      beam.visible = false;
+      root.scale.set(k, k ** 1.6, k); // squeezed flat faster than it narrows
+      if (haveWrist) root.position.lerpVectors(fold.from, wrist.position, t * t);
+      if (t >= 1) {
+        root.scale.setScalar(1);
+        fold.phase = 'rings';
+        fold.openSince = null;
+      }
+    } else if (fold.phase === 'rings') {
+      // The rings are worn while the fist is held.
+      if (haveWrist && !fist) fold.openSince ??= now;
+      else fold.openSince = null;
+      if (now - fold.seen > FOLD.lostMs || (fold.openSince != null && now - fold.openSince > FOLD.openedMs)) fold.phase = 'off';
+    }
+  }
+  const ringsOn = (now) => fold.phase === 'rings' || (fold.phase === 'closing' && (now - fold.since) / 1000 / FOLD.closeS > FOLD.ringsFrom);
 
   const colourOf = (state) => (state === 'crit' ? T.dangerLine : state === 'warn' ? T.point : HOLO);
   const show = (v, digits) => (v == null ? '—' : v.toFixed(digits));
@@ -542,12 +633,23 @@ export function createSuit(ctx) {
    */
   function place(frame, allowed) {
     if (pinned) return;
-    floatOverPalm(root, beam, frame, ctx.camera, palmState, floatState, { holdMs: K.holdMs, followRate: K.followRate, widthM: K.plateM, hand: 'right', allowed });
+    readWrist(frame);
+    const shown = floatOverPalm(root, beam, frame, ctx.camera, palmState, floatState, { holdMs: K.holdMs, followRate: K.followRate, widthM: K.plateM, hand: 'right', allowed });
+    stepFold(shown, haveWrist && !palmState.open, performance.now());
   }
 
   /** Every frame: turn the figure, let the simulated readings breathe, redraw what changed. */
   let lastWobble = 0;
+  let demo = null; // PC: the fold being played (fold()), a function of the seconds since demoSince
+  let demoSince = 0;
   function tick(now, dt) {
+    if (demo && !demo((now - demoSince) / 1000)) {
+      demo = null;
+      if (fold.phase === 'opening') {
+        fold.phase = 'vitals';
+        root.scale.setScalar(3);
+      }
+    }
     if (now - lastWobble > 2000) {
       lastWobble = now;
       const o2 = Math.round(base.o2 + (Math.random() - 0.5) * 0.6);
@@ -558,6 +660,13 @@ export function createSuit(ctx) {
       reading.pressureKpa = kpa;
       reading.heart = heart;
     }
+    // The wrist: rings while the fist is held, in the colour of the worst vital sign (the battery is not one).
+    if (now - lastLevel > 500) {
+      lastLevel = now;
+      bracelet.status(worst(...Object.entries(suitStates(reading, HUD.suit)).map(([key, state]) => (key === 'battery' ? '' : state))));
+    }
+    if (!pinned && fold.phase === 'rings' && now - fold.seen > FOLD.lostMs) fold.phase = 'off';
+    bracelet.update(haveWrist ? wrist : null, ringsOn(now), ctx.camera, now / 1000, dt);
     if (!root.visible) return;
     figure.spinner.rotation.y += (dt * Math.PI * 2) / K.turnS;
     if (dirty) redraw();
@@ -575,7 +684,10 @@ export function createSuit(ctx) {
     tick,
     /** No right hand in view (or no hands at all): the hologram goes, unless pinned. */
     hide() {
-      if (!pinned) root.visible = false;
+      if (pinned) return;
+      root.visible = false;
+      haveWrist = false;
+      if (fold.phase !== 'rings') fold.phase = 'off'; // rings wait a moment for the hand to come back (tick)
     },
     /** The headset's battery in percent, or null (for the rescue signal). */
     battery: () => reading.battery,
@@ -612,6 +724,54 @@ export function createSuit(ctx) {
       reading.heart = base.heart;
       dirty = true;
     },
-    state: () => ({ reading: { ...reading }, ...describe(), shown: root.visible, model: modelNote }),
+    /**
+     * PC: play the fold without a hand. fold('close') makes a fist under the pinned hologram,
+     * fold('watch') turns the back of that fist to the camera, fold('open') opens the hand again.
+     */
+    fold(what) {
+      const now = performance.now();
+      if (what === 'open') {
+        haveWrist = false;
+        fold.phase = 'opening';
+        fold.since = now;
+        root.visible = true;
+        demo = (t) => {
+          const k = Math.max(0.001, pop(t));
+          root.scale.set(3 * k, 3 * k * k, 3 * k);
+          return t < FOLD.openS;
+        };
+        demoSince = now;
+        return;
+      }
+      // A wrist below the hologram, its back (+y) up; for the watch, its back toward the camera.
+      wrist.position.copy(root.position).add(new THREE.Vector3(0, -0.25, 0));
+      if (what === 'watch') {
+        const toEye = ctx.camera.getWorldPosition(new THREE.Vector3()).sub(wrist.position).normalize();
+        wrist.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), toEye);
+      } else wrist.quaternion.identity();
+      haveWrist = true;
+      fold.seen = now + 1e9; // stays "tracked"
+      if (fold.phase !== 'rings') {
+        fold.phase = 'closing';
+        fold.since = now;
+        fold.from.copy(root.position);
+        const from = root.position.clone();
+        demo = (t) => {
+          const u = Math.min(1, t / FOLD.closeS);
+          const k = Math.max(0, 1 - backIn(u));
+          root.visible = u < 1;
+          root.scale.set(3 * k, 3 * k ** 1.6, 3 * k);
+          root.position.lerpVectors(from, wrist.position, u * u);
+          if (u >= 1) {
+            fold.phase = 'rings';
+            root.position.copy(from);
+          }
+          return u < 1;
+        };
+        demoSince = now;
+      }
+    },
+    bracelet,
+    state: () => ({ reading: { ...reading }, ...describe(), shown: root.visible, model: modelNote, fold: fold.phase, wrist: bracelet.state() }),
   };
 }
