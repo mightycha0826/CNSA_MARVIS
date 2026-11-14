@@ -78,7 +78,7 @@ export const FIELD = {
   // What makes it a hologram (the cone of light from the palm, the caption card under it)
   // goes while it is unfolded: then it is a plain map over the hand.
   unfoldMarginM: 1.5,
-  unfoldEnlarge: 1.15,
+  unfoldEnlarge: 1.3,
   unfoldMaxM: 1.1,
   unfoldFade: 0.62,
   mapM: MAP.widthM, // size of the palm map (m): the same as the Mars map
