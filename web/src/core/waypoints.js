@@ -146,3 +146,21 @@ export function reachableFrom(layerSet, slope, cell, maxSlopeDeg = 20) {
   }
   return out;
 }
+
+/**
+ * The number a newly marked waypoint gets ("Waypoint n"): the lowest one that none of the
+ * waypoints in `ids` holds, so the number of a deleted waypoint is given out again instead of
+ * the count running on. A waypoint holds the number it was made with for as long as it exists,
+ * also after it was given a name: it is the end of its id (wp-<time>-<n>).
+ * @param {Iterable<string>} ids  the ids of every waypoint there is, shown or not
+ */
+export function nextWaypointNumber(ids) {
+  const held = new Set();
+  for (const id of ids) {
+    const n = /-(\d+)$/.exec(String(id));
+    if (n) held.add(Number(n[1]));
+  }
+  let free = 1;
+  while (held.has(free)) free++;
+  return free;
+}

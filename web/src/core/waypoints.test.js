@@ -1,7 +1,7 @@
 // node --test src/core/waypoints.test.js
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { nearbyWaypoint, navTarget, walkableNear, reachableFrom } from './waypoints.js';
+import { nearbyWaypoint, navTarget, walkableNear, reachableFrom, nextWaypointNumber } from './waypoints.js';
 
 // The real map: 512 x 512 cells of 4 m, base and survey site where layerset.json has them.
 const REAL = { grid: { cols: 512, rows: 512, cellSizeM: 4 }, waypoints: [{ id: 'base', cell: [247, 357] }, { id: 'site1', cell: [275, 272] }] };
@@ -76,3 +76,23 @@ test('a walkable patch that nothing leads to is not a destination: the pick goes
   assert.deepEqual(walkableNear(ls, slope, [13, 10]), [12, 10], 'without the reachable set: the island');
   assert.deepEqual(walkableNear(ls, slope, [13, 10], { within }), [8, 10], 'with it: the end of the strip');
 });
+
+test('a new waypoint takes the lowest number that no waypoint holds', () => {
+  assert.equal(nextWaypointNumber([]), 1);
+  assert.equal(nextWaypointNumber(['wp-a-1', 'wp-a-2']), 3);
+  // the last one was deleted: its number is given out again, the count does not run on
+  assert.equal(nextWaypointNumber(['wp-a-1', 'wp-a-2', 'wp-a-3'].slice(0, 2)), 3);
+  // one in the middle was deleted: the gap is filled first
+  assert.equal(nextWaypointNumber(['wp-a-1', 'wp-b-3']), 2);
+  assert.equal(nextWaypointNumber(['wp-b-3', 'wp-b-2']), 1);
+  // all deleted: back to 1
+  assert.equal(nextWaypointNumber(new Map().keys()), 1);
+});
+
+test('ids from different sessions count together, and an id without a number holds none', () => {
+  assert.equal(nextWaypointNumber(['wp-mhw1x2-1', 'wp-mhz9k0-2', 'wp-mi03aa-4']), 3);
+  assert.equal(nextWaypointNumber(['base', 'site1', 'pick']), 1);
+  assert.equal(nextWaypointNumber(['wp-a-1', 'near', 'wp-a-2']), 3);
+  assert.equal(nextWaypointNumber(['wp-a-10', 'wp-a-1']), 2); // numbers, not text
+});
+

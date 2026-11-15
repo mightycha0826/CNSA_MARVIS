@@ -20,7 +20,7 @@ import { makePanel } from './panel.js';
 import { clickSound } from './sound.js';
 import { mode } from '../core/mode.js';
 import { popIn } from '../core/hologram.js';
-import { walkableNear, reachableFrom } from '../core/waypoints.js';
+import { walkableNear, reachableFrom, nextWaypointNumber } from '../core/waypoints.js';
 import { mapCellInRoom, showPick, cellOfMapPoint, mapTargetCell, mapZoom } from '../map/index.js';
 import { MAP } from '../map/config.js';
 import { FIELD, fieldPlaceOnMap, showFieldPick, fieldHere, fieldTarget, fieldSpan } from '../field/index.js';
@@ -44,7 +44,6 @@ export function createMarks({ ctx, state, showToast, changed }) {
   // the scan has found itself in the stored map (map:run, trusted): until then it waits in
   // `shelved`, unseen. `runs`: the scan runs whose coordinates it is known to fit.
   const waypoints = new Map();
-  let waypointCount = 0;
   let shelved = []; // field waypoints that are not shown: [{ id, label, room, runs }]
   const scan = { run: null, trusted: false, storedRun: null }; // the scan's run and whether it trusts the stored map (scan/index.js)
   // A waypoint that was just set and may be given a name: { id, until, listening, listenUntil, token }.
@@ -80,7 +79,7 @@ export function createMarks({ ctx, state, showToast, changed }) {
       if (w.cell) items.push({ id: w.id, label: w.label, cell: w.cell });
       else items.push({ id: w.id, label: w.label, room: w.room, runs: runsOf(w) });
     }
-    ctx.bus.emit('waypoints:store', { items: [...items, ...shelved], count: waypointCount });
+    ctx.bus.emit('waypoints:store', { items: [...items, ...shelved], count: items.length + shelved.length });
   }
 
   /** The room's coordinates changed (a new session, a recentre): the field waypoints are put aside, not deleted. */
@@ -120,9 +119,8 @@ export function createMarks({ ctx, state, showToast, changed }) {
   }
 
   /** The hub's list from earlier sessions. */
-  function onStoredWaypoints({ items, count }) {
+  function onStoredWaypoints({ items }) {
     if (!Array.isArray(items)) return;
-    waypointCount = Math.max(waypointCount, Number.isInteger(count) ? count : 0);
     let added = 0;
     for (const it of items) {
       if (!it?.id || waypoints.has(it.id)) continue;
@@ -278,7 +276,9 @@ export function createMarks({ ctx, state, showToast, changed }) {
   // ---- waypoints ----
   /** Mark a place: { room } on the field map, { cell } on the Mars map. The waypoint then waits for its name. */
   function addWaypoint(place) {
-    const n = ++waypointCount;
+    // Its number: the lowest one free among all the waypoints there are, those put aside too
+    // (they come back with their names), so the number of a deleted waypoint is used again.
+    const n = nextWaypointNumber([...waypoints.keys(), ...shelved.map((d) => d.id)]);
     // The id must not meet one from an earlier session (the stored list may arrive later).
     const w = { id: `wp-${Date.now().toString(36)}-${n}`, label: `Waypoint ${n}`, ...(place.room ? { room: [place.room[0], place.room[1]] } : { cell: [place.cell[0], place.cell[1]] }) };
     waypoints.set(w.id, w);
