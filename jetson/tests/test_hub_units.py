@@ -438,3 +438,280 @@ class WaypointStoreTest(unittest.TestCase):
             self.assertEqual(store.stored()["items"][0]["label"], "kept")
             long = store.save({"items": [{"id": "w", "label": "x" * 500, "room": [0, 0], "runs": [str(i) for i in range(30)]}]})
             self.assertEqual((len(long["items"][0]["label"]), len(long["items"][0]["runs"])), (80, 8))
+
+
+class FakeRecorder:
+    """What the hub hands to its recorder (record.py)."""
+
+    def __init__(self, on=True):
+        self.on = on
+        self.got = []   # ("mic", pcm, rate, src) and ("speech", pcm, rate, urgent), as they came
+
+    def mic(self, pcm, rate, at=None, src=None):
+        self.got.append(("mic", pcm, rate, src))
+
+    def speech(self, pcm, rate, at=None, urgent=False):
+        self.got.append(("speech", pcm, rate, urgent))
+
+
+class RecordingMicTest(unittest.TestCase):
+    """While a recording runs, a headset's microphone goes into it: all of it, also what the
+    hub does not listen to because it is speaking itself."""
+
+    CHUNK = b"\x10\x00" * 1600
+
+    class Segmenter:
+        RATE = 16000
+
+        def __init__(self):
+            self.resets, self.fed = 0, []
+
+        def reset(self):
+            self.resets += 1
+
+        def feed(self, data, rate):
+            self.fed.append(data)
+            return []
+
+    @staticmethod
+    def stub(recorder, mute_until=0.0):
+        class Stub:
+            pass
+        stub = Stub()
+        stub.recorder, stub.mute_until = recorder, mute_until
+        return stub
+
+    def test_the_microphone_is_recorded_between_begin_and_end_also_while_the_hub_speaks(self):
+        import asyncio
+        import time
+        from marswalk.hub import Client, Hub
+        rec = FakeRecorder()
+        stub = self.stub(rec, mute_until=time.monotonic() + 60)   # the hub is speaking
+        client = Client(ws=None, peer="10.42.0.7")
+        Hub.on_audio(stub, client, self.CHUNK)
+        self.assertEqual(rec.got, [])                # before mic.begin nothing says what this is
+        asyncio.run(Hub.on_mic_begin(stub, client, {"sampleRate": 48000}))
+        client.segmenter = seg = self.Segmenter()    # as a headset that streams has one
+        Hub.on_audio(stub, client, self.CHUNK)
+        self.assertEqual(rec.got, [("mic", self.CHUNK, 48000, id(client))])
+        self.assertEqual((seg.resets, seg.fed), (1, []))          # recorded, but not listened to
+        stub.mute_until = 0.0
+        Hub.on_audio(stub, client, self.CHUNK)
+        self.assertEqual((len(rec.got), seg.fed), (2, [self.CHUNK]))
+        asyncio.run(Hub.on_mic_end(stub, client, {}))
+        Hub.on_audio(stub, client, self.CHUNK)
+        self.assertEqual(len(rec.got), 2)
+
+    def test_push_to_talk_and_a_hub_without_a_recogniser_are_recorded_too(self):
+        import asyncio
+        from marswalk.hub import Client, Hub
+        rec = FakeRecorder()
+        stub = self.stub(rec)
+        client = Client(ws=None, peer="test")
+        asyncio.run(Hub.on_mic_begin(stub, client, {}))            # hold to talk, at the usual 16 kHz
+        Hub.on_audio(stub, client, self.CHUNK)
+        self.assertEqual(rec.got, [("mic", self.CHUNK, 16000, id(client))])
+        self.assertEqual(bytes(client.mic_buf), self.CHUNK)        # and it is still an utterance for the hub
+        client.mic_on = False    # a stream on a hub that has no model to cut it into utterances
+        Hub.on_audio(stub, client, self.CHUNK)
+        self.assertEqual(len(rec.got), 2)
+
+    def test_nothing_goes_to_a_recorder_that_is_off(self):
+        import asyncio
+        from marswalk.hub import Client, Hub
+        rec = FakeRecorder(on=False)
+        client = Client(ws=None, peer="test")
+        asyncio.run(Hub.on_mic_begin(self.stub(rec), client, {}))
+        Hub.on_audio(self.stub(rec), client, self.CHUNK)
+        self.assertEqual(rec.got, [])
+
+    def test_two_connections_from_one_address_are_two_streams(self):
+        import asyncio
+        from marswalk.hub import Client, Hub
+        rec = FakeRecorder()
+        stub = self.stub(rec)
+        one, two = Client(ws=None, peer="127.0.0.1"), Client(ws=None, peer="127.0.0.1")
+        for client in (one, two):
+            asyncio.run(Hub.on_mic_begin(stub, client, {}))
+            Hub.on_audio(stub, client, self.CHUNK)
+        self.assertNotEqual(rec.got[0][3], rec.got[1][3])
+
+
+class RecordingSpeechTest(unittest.TestCase):
+    """What the hub says goes into the recording at the moment it goes out to the headsets."""
+
+    PCM = b"\x01\x02" * 5000
+
+    def say(self, recorder, priority="normal", clients=1):
+        import asyncio
+        from marswalk.hub import Hub
+        events, pcm = [], self.PCM
+
+        class Tts:
+            sample_rate = 22050
+
+            def synthesize(self, text):
+                return pcm
+
+        class Stub:
+            tts = Tts()
+            say_epoch = 0
+            mute_until = 0.0
+
+            async def broadcast(self, type_, payload, exclude=None):
+                events.append(type_)
+
+            async def broadcast_bytes(self, data):
+                events.append(len(data))
+
+        stub = Stub()
+        stub.recorder, stub.clients = recorder, set(range(clients))
+        taken = recorder.speech
+        recorder.speech = lambda *a, **kw: (events.append("recorded"), taken(*a, **kw))
+
+        async def run():
+            stub.tts_lock = asyncio.Lock()
+            await Hub.say(stub, "Route recalculated.", priority)
+        asyncio.run(run())
+        return events
+
+    def test_the_whole_utterance_is_handed_over_as_it_begins_to_go_out(self):
+        rec = FakeRecorder()
+        self.assertEqual(self.say(rec), ["tts.begin", "recorded", 4096, 4096, 1808, "tts.end"])
+        self.assertEqual(rec.got, [("speech", self.PCM, 22050, False)])
+
+    def test_urgent_speech_is_marked_so_it_cuts_the_one_before_it_in_the_recording_too(self):
+        rec = FakeRecorder()
+        self.say(rec, "urgent")
+        self.assertEqual(rec.got, [("speech", self.PCM, 22050, True)])
+
+    def test_no_recording_or_nobody_to_hear_it_and_nothing_is_handed_over(self):
+        rec = FakeRecorder(on=False)
+        self.assertEqual(self.say(rec), ["tts.begin", 4096, 4096, 1808, "tts.end"])
+        rec = FakeRecorder()
+        self.assertNotIn("recorded", self.say(rec, clients=0))
+        self.assertEqual(rec.got, [])
+
+
+def hub_args(folder, **more):
+    """The options of a hub that needs no models and no sensor, and writes into `folder` only."""
+    import argparse
+    return argparse.Namespace(serial="none", stt="null", tts="tone", lang="en", warn_c=30.0, critical_c=35.0,
+                              margin_c=1.0, wake_word=None, keep_audio=0, dev=False, static=None,
+                              maps_dir=str(folder / "maps"), recordings_dir=str(folder / "recordings"), **more)
+
+
+class HubRecorderTest(unittest.TestCase):
+    def test_the_options_reach_the_recorder_and_the_mirror_has_it(self):
+        import tempfile
+        from pathlib import Path
+        from marswalk.hub import Hub
+        with tempfile.TemporaryDirectory() as d:
+            hub = Hub(hub_args(Path(d), record_max_min=5.0, no_convert=True))
+            self.assertEqual((hub.recorder.folder, hub.recorder.max_seconds, hub.recorder.convert),
+                             (Path(d) / "recordings", 300.0, False))
+            self.assertIs(hub.mirror.recorder, hub.recorder)
+            self.assertFalse((Path(d) / "recordings").exists())    # made with the first recording, not before
+            hub = Hub(hub_args(Path(d), record_max_min=30.0, no_convert=False))
+            self.assertEqual((hub.recorder.max_seconds, hub.recorder.convert), (1800.0, True))
+
+
+try:
+    from aiohttp.test_utils import AioHTTPTestCase
+except ImportError:      # the rest of this file needs no aiohttp
+    AioHTTPTestCase = None
+
+
+@unittest.skipIf(AioHTTPTestCase is None, "needs aiohttp")
+class WholeHubRecordingTest(AioHTTPTestCase or unittest.TestCase):
+    """A whole hub (no models, the beep for a voice) behind a test server: a headset's pictures,
+    its microphone and the hub's own speech end up in one file."""
+
+    PICTURE = b"\xff\xd8\xff\xc0\x00\x0b\x08\x00\x30\x00\x40\x01\x01\x11\x00\xff\xd9"   # a frame header of 64 x 48, no more
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.folder = Path(folder.name)
+        super().setUp()
+
+    async def get_application(self):
+        from marswalk.hub import Hub, build_app
+        self.hub = Hub(hub_args(self.folder, record_max_min=30.0, no_convert=True))
+        self.hub.recorder.min_free_bytes = self.hub.recorder.stop_free_bytes = 0   # whatever this machine's disk has
+        return build_app(self.hub)
+
+    async def headset(self):
+        """The two connections of the app: the messages and the voices, and the pictures."""
+        ws = await self.client.ws_connect("/ws")
+        pictures = await self.client.ws_connect("/mirror")
+        self.addAsyncCleanup(ws.close)
+        self.addAsyncCleanup(pictures.close)
+        await pictures.receive_json()
+        return ws, pictures
+
+    async def record(self, on):
+        resp = await self.client.post("/monitor/record", json={"on": on})
+        self.assertEqual(resp.status, 200)
+        return (await resp.json())["recording"]
+
+    @staticmethod
+    def message(type_, payload):
+        import json
+        return json.dumps({"type": type_, "ts": 0, "payload": payload})
+
+    async def test_pictures_microphone_and_speech_are_in_the_file(self):
+        import asyncio
+        import json
+        import struct
+        from aiohttp import WSMsgType
+        from marswalk import record
+        ws, pictures = await self.headset()
+        name = (await self.record(True))["name"]
+        self.assertEqual(await pictures.receive_json(), {"viewers": 1, "acks": True})
+        await asyncio.sleep(0.15)    # so the first 100 ms of microphone lie inside the recording
+        await pictures.send_bytes(self.PICTURE)
+        await ws.send_str(self.message("mic.begin", {"sampleRate": 16000}))
+        await ws.send_bytes(struct.pack("<1600h", *[1000] * 1600))
+        await asyncio.sleep(0.2)     # the hub's speech turns the microphone down: let it be over first
+        await ws.send_str(self.message("voice.say", {"text": "Base has your signal."}))
+        while True:                  # the beep comes back to the headset
+            msg = await asyncio.wait_for(ws.receive(), 5.0)
+            if msg.type == WSMsgType.TEXT and json.loads(msg.data)["type"] == "tts.end":
+                break
+        await asyncio.sleep(0.4)     # the headset is still playing it
+        end = await self.record(False)
+        self.assertEqual((end["on"], end["name"], end["frames"]), (False, name, 1))
+        path = self.folder / "recordings" / f"{name}.mkv"
+        self.assertGreater(record.mkv_seconds(path), 0.7)
+        try:                                   # the small Matroska reader of the recorder's tests
+            from test_record import blocks, read
+        except ImportError:                    # run as tests.test_hub_units
+            from tests.test_record import blocks, read
+        found = blocks(read(path)[0])          # (ms, track, flags, data)
+        self.assertEqual({data for _ms, track, _flags, data in found if track == 1}, {self.PICTURE})
+        self.assertEqual(end["audio"], record.np is not None)
+        if record.np is None:
+            return
+        sound = record.np.frombuffer(b"".join(data for _ms, track, _flags, data in found if track == 2), "<i2").astype(int)
+        self.assertGreater(int((sound == 1000).sum()), 4000)   # the microphone's 100 ms, brought to 48 kHz
+        self.assertGreater(int(abs(sound).max()), 6000)        # the hub's beep, far louder than that
+
+    async def test_a_recording_that_runs_is_finished_when_the_hub_ends(self):
+        from marswalk import record
+        _ws, pictures = await self.headset()
+        name = (await self.record(True))["name"]
+        await pictures.receive_json()
+        await pictures.send_bytes(self.PICTURE)
+        self.assertEqual(await pictures.receive_json(), {"ack": 1})
+        await self.app.shutdown()    # the first thing a hub does when it is told to end
+        self.assertFalse(self.hub.recorder.on)
+        path = self.folder / "recordings" / f"{name}.mkv"
+        self.assertIsNotNone(record.mkv_seconds(path))    # its length is written: the file was closed properly
+        self.assertIn(self.PICTURE, path.read_bytes())
+        self.assertEqual(self.hub.recorder.recordings()[0]["state"], "master only")   # no MP4 begun that would be cut off
+        with self.assertLogs("mirror", "WARNING"):
+            resp = await self.client.post("/monitor/record", json={"on": True})
+        self.assertEqual(resp.status, 409)                # and none begins on a hub that is ending

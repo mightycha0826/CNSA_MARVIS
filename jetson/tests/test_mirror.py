@@ -14,10 +14,13 @@ from aiohttp.test_utils import AioHTTPTestCase
 
 from marswalk import mirror as mirror_module
 from marswalk.mirror import BOUNDARY, Mirror, bound_send_buffer, clean_tune, is_loopback
+from marswalk.record import RecordError, Recorder, mkv_seconds
 
 JPEG = b"\xff\xd8\xff\xe0" + bytes(range(256)) * 4 + b"\xff\xd9"   # starts like a JPEG; the hub looks no further
 JPEG_2 = b"\xff\xd8\xff\xe0" + b"second picture" * 50 + b"\xff\xd9"
 NOT_A_JPEG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+# For the real recorder, which reads a picture's size: a frame header of 64 x 48 and nothing to see.
+PICTURE = b"\xff\xd8\xff\xc0\x00\x0b\x08\x00\x30\x00\x40\x01\x01\x11\x00\xff\xd9"
 
 
 class CleanTuneViewTest(unittest.TestCase):
@@ -460,6 +463,178 @@ class MonitorTest(MirrorCase):
         self.assertEqual(resp.status, 200)
         self.assertIn("text/html", resp.headers["Content-Type"])
         self.assertIn("/monitor.mjpg", await resp.text())
+
+
+class RecordingTest(MirrorCase):
+    """The record button against the real recorder (record.py), writing into a folder of the
+    test's own. No MP4 is made here: that is GStreamer's part and tests/test_record.py's."""
+
+    def recorder(self, **kw):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        kw.setdefault("min_free_bytes", 0)   # the tests do not depend on how full this machine's disk is
+        rec = Recorder(Path(folder.name) / "recordings", convert=False, **kw)
+        rec.clock = self.mirror.clock        # one clock for both, as in the hub; moved by hand here
+        self.addCleanup(rec.close)
+        self.mirror.recorder = rec
+        return rec
+
+    async def record(self, on):
+        resp = await self.client.post("/monitor/record", json={"on": on})
+        return resp.status, await resp.json()
+
+    async def ended(self, rec):
+        """Wait until a recording that ends by itself has done so (its own thread does it)."""
+        for _ in range(400):
+            if not rec.on:
+                return
+            await asyncio.sleep(0.01)
+        self.fail("the recording did not end")
+
+    async def test_start_pictures_stop_and_the_file_is_listed(self):
+        rec = self.recorder()
+        self.assertEqual(((await self.state())["recording"], (await self.state())["recordings"]), (None, []))
+        ws, hello = await self.source()
+        self.assertEqual(hello["viewers"], 0)
+
+        status, body = await self.record(True)
+        self.assertEqual(status, 200)
+        name = body["recording"]["name"]
+        self.assertRegex(name, r"^marswalk-[0-9]{8}-[0-9]{6}$")
+        self.assertEqual(body["recording"]["on"], True)
+        self.assertEqual(await self.told(ws), {"viewers": 1, "acks": True})   # no page open: pictures for the file
+        for k in (1, 2, 3):
+            await ws.send_bytes(PICTURE)
+            self.assertEqual(await self.told(ws), {"ack": k})
+            self.now += 0.1
+        self.now = 1002.5
+        state = await self.state()
+        self.assertEqual((state["recording"]["on"], state["recording"]["name"], state["recording"]["seconds"]),
+                         (True, name, 2.5))
+        self.assertEqual(state["viewers"], 0)   # pages watching: the recording is not one
+        self.assertEqual([(r["name"], r["state"], r["mp4"]) for r in state["recordings"]], [(name, "recording", None)])
+
+        status, body = await self.record(False)
+        self.assertEqual(status, 200)
+        end = body["recording"]
+        self.assertEqual((end["on"], end["name"], end["seconds"], end["frames"], end["dropped"]), (False, name, 2.5, 3, 0))
+        self.assertEqual(await self.told(ws), {"viewers": 0, "acks": True})
+        state = await self.state()
+        self.assertEqual(state["recording"], end)   # how the last one ended stays to be read
+        size = (rec.folder / f"{name}.mkv").stat().st_size
+        self.assertEqual(state["recordings"], [{"name": name, "seconds": 2.5, "mkv": size, "mp4": None,
+                                                "state": "master only"}])
+        self.assertEqual(end["bytes"], size)
+        self.assertEqual(mkv_seconds(rec.folder / f"{name}.mkv"), 2.5)   # the file was finished
+        await ws.send_bytes(PICTURE)   # after the stop a picture is shown, not recorded
+        self.assertEqual(await self.told(ws), {"ack": 4})
+        self.assertEqual((await self.state())["recording"]["frames"], 3)
+
+    async def test_asking_for_what_already_is_so_is_no_error(self):
+        self.recorder()
+        self.assertEqual(await self.record(False), (200, {"recording": None}))   # nothing was recorded yet
+        _status, first = await self.record(True)
+        status, again = await self.record(True)
+        self.assertEqual((status, again["recording"]["name"], again["recording"]["on"]),
+                         (200, first["recording"]["name"], True))
+        _status, end = await self.record(False)
+        self.assertEqual(await self.record(False), (200, end))
+        self.assertEqual(len((await self.state())["recordings"]), 1)
+
+    async def test_a_start_that_cannot_be_is_told_with_its_reason(self):
+        rec = self.recorder(min_free_bytes=10**18)   # more than any disk has free
+        ws, _hello = await self.source()
+        with self.assertLogs("mirror", "WARNING"):
+            status, body = await self.record(True)
+        self.assertEqual(status, 409)
+        self.assertIn("disk short", body["error"])
+        self.assertEqual((rec.on, (await self.state())["recording"]), (False, None))
+        await self.settled(ws)   # and the app was told nothing: no pictures are wanted
+
+    async def test_a_recorder_that_breaks_is_an_answer_too(self):
+        rec = self.recorder()
+        def broken():
+            raise RecordError("the file cannot be made: no such disk")
+        rec.start = broken
+        with self.assertLogs("mirror", "WARNING"):
+            self.assertEqual(await self.record(True), (409, {"error": "the file cannot be made: no such disk"}))
+
+    async def test_a_recording_is_fetched_as_a_download(self):
+        rec = self.recorder()
+        ws, _hello = await self.source()
+        _status, body = await self.record(True)
+        await self.told(ws)
+        await ws.send_bytes(PICTURE)
+        await self.told(ws)
+        await self.record(False)
+        name = body["recording"]["name"] + ".mkv"
+        resp = await self.client.get(f"/recordings/{name}")
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(resp.headers["Content-Disposition"], f'attachment; filename="{name}"')
+        data = await resp.read()
+        self.assertEqual(data, (rec.folder / name).read_bytes())
+        self.assertEqual(data[:4], bytes.fromhex("1A45DFA3"))   # a Matroska file
+        self.assertIn(PICTURE, data)
+
+    async def test_nothing_but_a_recording_of_that_folder_is_handed_out(self):
+        rec = self.recorder()
+        rec.folder.mkdir()
+        ours = "marswalk-20261115-220001.mp4"
+        (rec.folder / ours).write_bytes(b"video")
+        (rec.folder / "notes.txt").write_bytes(b"no")
+        (rec.folder / "marswalk-20261115-220001.mp4.part").write_bytes(b"half")
+        (rec.folder / "marswalk-20261115-220001.mkv\n").write_bytes(b"no")      # a name with a line end behind it
+        (rec.folder / "marswalk-20261115-220003.mkv").mkdir()                    # a folder with a file's name
+        (rec.folder.parent / "marswalk-20261115-220002.mp4").write_bytes(b"no")  # a good name, outside the folder
+        (rec.folder.parent / "secret.txt").write_bytes(b"no")
+        self.assertEqual(await (await self.client.get(f"/recordings/{ours}")).read(), b"video")
+        for name in ("notes.txt", "marswalk-20261115-220001.mp4.part", "marswalk-20261115-220001.mkv%0A",
+                     "marswalk-20261115-220003.mkv", "marswalk-20261115-220009.mp4",          # not there
+                     "..%2Fmarswalk-20261115-220002.mp4", "%2e%2e%2fmarswalk-20261115-220002.mp4",
+                     "..%2Fsecret.txt", "..%5Csecret.txt", "%2Fetc%2Fpasswd",
+                     "MARSWALK-20261115-220001.MP4", "marswalk-20261115-220001.mp4%00", "marswalk-20261115-220001",
+                     "sub/marswalk-20261115-220001.mp4", ""):
+            resp = await self.client.get(f"/recordings/{name}")
+            self.assertEqual(resp.status, 404, name)
+            self.assertNotIn(await resp.read(), (b"video", b"no", b"half"), name)
+        self.assertIn((await self.client.get("/recordings")).status, (403, 404))    # and no list of the folder
+        self.mirror.recorder = None   # a hub without a recorder has no recordings
+        self.assertEqual((await self.client.get(f"/recordings/{ours}")).status, 404)
+
+    async def test_a_recording_that_ends_by_itself_is_told_to_the_app_with_its_next_picture(self):
+        rec = self.recorder(max_seconds=60.0)
+        ws, _hello = await self.source()
+        await self.record(True)
+        self.assertEqual(await self.told(ws), {"viewers": 1, "acks": True})
+        await ws.send_bytes(PICTURE)
+        self.assertEqual(await self.told(ws), {"ack": 1})
+        self.now += 61.0             # its time is up; nobody pressed anything
+        await self.ended(rec)
+        state = (await self.state())["recording"]
+        self.assertEqual((state["on"], state["stopped"], state["seconds"]), (False, "time limit", 60.0))
+        await ws.send_bytes(PICTURE)
+        self.assertEqual(await self.told(ws), {"viewers": 0, "acks": True})   # no more pictures wanted
+        self.assertEqual(await self.told(ws), {"ack": 2})
+        await ws.send_bytes(PICTURE)
+        self.assertEqual(await self.told(ws), {"ack": 3})                     # told once, not with every picture
+
+    async def test_the_headset_leaving_does_not_end_the_recording(self):
+        rec = self.recorder()
+        ws, _hello = await self.source()
+        _status, body = await self.record(True)
+        await self.told(ws)
+        await ws.send_bytes(PICTURE)
+        await self.told(ws)
+        await ws.close()
+        self.now += 3.0
+        self.assertEqual((await self.state())["recording"]["on"], True)
+        ws, hello = await self.source()                  # it comes back and is asked for pictures at once
+        self.assertEqual(hello, {"viewers": 1, "acks": True})
+        await ws.send_bytes(PICTURE)
+        await self.told(ws)
+        _status, body = await self.record(False)
+        self.assertEqual((body["recording"]["frames"], body["recording"]["seconds"]), (2, 3.0))
+        self.assertEqual(mkv_seconds(rec.folder / (body["recording"]["name"] + ".mkv")), 3.0)
 
 
 class OversizeTest(MirrorCase):

@@ -109,6 +109,16 @@ port_pids() { ss -Hltnp "sport = :$1" 2>/dev/null | grep -o 'pid=[0-9]*' | cut -
 
 port_busy() { [ -n "$(ss -Hltn "sport = :$1" 2>/dev/null)" ]; }
 
+# A port stays listed for a moment after its program has gone: up to 2 s for it to be free.
+port_freed() {
+  local i
+  for ((i = 0; i < 10; i++)); do
+    port_busy "$1" || return 0
+    sleep 0.2
+  done
+  return 1
+}
+
 port_owner() {
   local who
   who=$(ss -Hltnp "sport = :$1" 2>/dev/null | sed -n 's/.*users:(("\([^"]*\)",pid=\([0-9]*\).*/\1, pid \2/p' | head -n 1)
@@ -274,7 +284,7 @@ step_cert() {
 }
 
 step_hub() {
-  local p i
+  local p
   local -a pids
   if unit_active; then
     HUB_BY_UNIT=1
@@ -294,11 +304,7 @@ step_hub() {
     line Hub OK "stopped the running one (pid ${pids[*]})"
   fi
   for p in "$PORT" "$HTTP_PORT"; do
-    for ((i = 0; i < 10; i++)); do
-      port_busy "$p" || break
-      sleep 0.2
-    done
-    if port_busy "$p"; then
+    if ! port_freed "$p"; then
       line Hub FAIL "port $p is taken by $(port_owner "$p"), which is not a hub of yours. Stop it, or use other ports (MARSWALK_PORT, MARSWALK_HTTP_PORT)."
       return 1
     fi
@@ -489,6 +495,8 @@ do_stop() {
     return 1
   fi
   rm -f "$PIDFILE"
+  port_freed "$PORT"
+  port_freed "$HTTP_PORT"
   line Hub OK "stopped (pid ${pids[*]})"
 }
 
