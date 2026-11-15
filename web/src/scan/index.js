@@ -75,8 +75,12 @@ const depthRangeM = clamp(numberOr('depthRange', 5), 1.5, 8);
 // floor by up to this much is still ground to walk on, not a thing in the way and not a drop
 // (0.2 m: a kerb, a stair's riser). The three heights below are this plus what depth error
 // adds (a floor point 5 m away reads up to 7 cm off, and the floor itself a few cm).
-// ?step=0.05 gives the stricter heights of before (things from 0.25 m, drops from 0.3 m).
+// ?step=0.05&low=0.05 gives the stricter heights of before (things from 0.25 m, drops from 0.3 m).
 const stepM = clamp(numberOr('step', 0.2), 0, 0.5);
+// Downwards the ground may differ more: level ground up to this much lower than the floor (the
+// next terrace, a sunken part of the room, a slope's foot) is walked down to and is no drop.
+// 0.5 m. ?low=0.2 gives the same as upwards.
+const lowM = clamp(numberOr('low', 0.5), 0, 1.5);
 
 export const SCAN = {
   cellM: 0.1, // the window is TILES.window x TILES.cells of these per side (tiles.js): 25.6 m
@@ -124,11 +128,12 @@ export const SCAN = {
   depthRangeM,
   bodyM: 0.8, // cells this close to the headset, along the floor, are the wearer's own hands and body
   floorNoiseM: 0.1 + stepM, // a depth point within this height of y = 0 counts as ground (0.3 m: level ground a step up or down, and the floor a few cm off)
+  floorLowM: 0.1 + Math.max(stepM, lowM), // and down to this far below it (0.6 m): lower level ground, with what depth error adds
   thingMinM: 0.2 + stepM, // a depth point counts as a thing from this height (0.4 m): above what a step up plus depth error can reach
-  // Ground this far below the floor is a drop, and is marked like an obstacle: a stair going down, a pit.
-  // 0.45 m: ground a step lower (0.2 m) is walked down, and depth error puts a point 7 cm low at most.
+  // Ground this far below the floor is a drop, and is marked like an obstacle: a stair well, a pit, a ledge.
+  // 0.7 m: ground up to 0.5 m lower is walked down to, and depth error puts a point 7 cm low at most.
   // ?drops=0 turns it off (a mirror-like floor may read as deeper than it is).
-  dropMinM: isOff('drops') ? 0 : 0.25 + stepM,
+  dropMinM: isOff('drops') ? 0 : 0.2 + Math.max(stepM, lowM),
   minPoints: 3, // samples needed in a cell before a read says anything about it
   // Far away the image lies thin on the floor: where a floor cell would get fewer than twice
   // this many samples, this many say "floor", and where it would not even get this many the

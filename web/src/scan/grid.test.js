@@ -180,7 +180,7 @@ function ledgeSensor(camera, edgeZ, depth) {
 test('a drop is marked like an obstacle: from the edge of the floor on, with no unknown strip behind the edge', () => {
   const grid = newGrid();
   const camera = questEye(1.6);
-  const sensor = ledgeSensor(camera, -1.5, 0.6); // the floor ends 1.5 m ahead, 0.6 m down
+  const sensor = ledgeSensor(camera, -1.5, 1.0); // the floor ends 1.5 m ahead, 1 m down
   for (let k = 0; k < SCAN.setScans; k++) {
     addDepthView(grid, sensor, camera.projectionMatrix.elements, camera.matrixWorld.elements, SCAN);
     grid.commit();
@@ -200,8 +200,16 @@ test('a low step down is not a drop, and a drop that turns out to be floor is cl
     grid.commit();
   }
   assert.ok(!grid.cells.includes(OBSTACLE), 'a 20 cm step is not marked');
+  // Nor is level ground half a metre lower: it is walked down to.
+  const terrace = newGrid();
+  const lower = ledgeSensor(camera, -1.5, 0.5);
+  for (let k = 0; k < SCAN.setScans + 1; k++) {
+    addDepthView(terrace, lower, camera.projectionMatrix.elements, camera.matrixWorld.elements, SCAN);
+    terrace.commit();
+  }
+  assert.ok(!terrace.cells.includes(OBSTACLE), 'ground 0.5 m lower is not marked');
 
-  const pit = ledgeSensor(camera, -1.5, 0.6);
+  const pit = ledgeSensor(camera, -1.5, 1.0);
   for (let k = 0; k < SCAN.setScans; k++) {
     addDepthView(grid, pit, camera.projectionMatrix.elements, camera.matrixWorld.elements, SCAN);
     grid.commit();
@@ -376,8 +384,17 @@ test('level ground a step above or below the floor is ground, not a thing and no
       assert.equal(grid.cells[cellOf(0.05, 0.05)], PASSABLE, `ground at ${level} m read as ${(level + off).toFixed(2)} m`);
     }
   }
-  // What stands on such ground is still in the way: a seat 0.45 m above the floor, a pit 0.6 m deep.
-  for (const y of [0.45, -0.6]) {
+  // Downwards further: level ground half a metre lower is walked down to.
+  for (const y of [-0.3, -0.4, -0.5, -0.57]) {
+    const grid = newGrid();
+    for (let i = 0; i < SCAN.setScans + 2; i++) {
+      for (let k = 0; k < many; k++) grid.add(0.05, y, 0.05);
+      grid.commit();
+    }
+    assert.equal(grid.cells[cellOf(0.05, 0.05)], PASSABLE, `ground ${y} m`);
+  }
+  // What stands on such ground is still in the way: a seat 0.45 m above the floor, a pit 0.8 m deep.
+  for (const y of [0.45, -0.8]) {
     const grid = newGrid();
     for (let i = 0; i < SCAN.setScans + 2; i++) {
       for (let k = 0; k < many; k++) grid.add(0.05, y, 0.05);
