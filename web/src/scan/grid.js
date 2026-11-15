@@ -416,7 +416,7 @@ export function addDepthView(grid, depthAt, P, M, cfg) {
   const farthestThing = (cfg.depthRangeM - 2 * cfg.cellM) ** 2;
   const thingMinM = cfg.thingMinM;
   const dropMinM = cfg.dropMinM > 0 ? cfg.dropMinM : 0;
-  const halfCell = cfg.cellM * 0.5;
+  const cellM = cfg.cellM;
   // The eye's place and the three columns of its rotation, as plain numbers: this loop runs
   // for every sample of every read (depthSamples squared: 82,944 times at 288), and reading them out of the matrices
   // each time was most of what a read cost.
@@ -460,6 +460,13 @@ export function addDepthView(grid, depthAt, P, M, cfg) {
       const along = hx * hx + hz * hz;
       const wy = oy + d * (colY[i] + rowY);
       if (dropMinM > 0 && wy < -dropMinM && Number.isFinite(wy) && oy > 0) {
+        // One sample in four walks the stretch (every other column of every other row). Each
+        // walk lays about two points in every cell it crosses, so every sample doing it laid
+        // far more than a cell needs: at 288 samples a side a read with a drop in view cost
+        // nine times the work of before today (now a little over twice, for five times the
+        // ground), and two stray too-far samples through one cell were enough to mark a drop on
+        // bare floor. The strip behind a real edge is still marked in full (grid.test.js).
+        if ((i | j) & 1) continue;
         // The ray went through where the floor should be and met ground lower down: the floor
         // ends here. It is missing from where the ray crossed floor level to where it landed,
         // and that whole stretch is marked: the near part of the lower ground is hidden behind
@@ -470,7 +477,9 @@ export function addDepthView(grid, depthAt, P, M, cfg) {
         const ex = hx * t;
         const ez = hz * t;
         const stretch = Math.hypot(hx - ex, hz - ez);
-        const steps = Math.min(40, Math.ceil(stretch / halfCell));
+        // A point a cell along the stretch: with several rays through every cell that marks it,
+        // and one stray ray (a single point in each cell it crosses) can no longer do so with one other.
+        const steps = Math.min(40, Math.ceil(stretch / cellM));
         for (let k = 0; k <= steps; k++) {
           const f = steps ? k / steps : 0;
           const px = ex + (hx - ex) * f;

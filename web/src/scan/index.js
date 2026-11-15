@@ -73,8 +73,9 @@ export const SCAN = {
   // Live depth. Range, rate and sample count can be set from the address while tuning on the
   // headset: ?depthRange=2.5&depthMs=350&depthSamples=192 are the values before 2026-11-15.
   // What a read costs the processor (measured on the Jetson's Cortex-A78AE, the class of core
-  // the Quest 3 has): 3.5 ms for these 82,944 points. It was 3.4 ms for the 36,864 of before:
-  // the loops in grid.js were tightened so that more points cost no more per read. There are
+  // the Quest 3 has): 3.5 ms for these 82,944 points over a floor, about 5 ms with a drop in
+  // view (a stair down: every sample beyond the edge walks the missing floor, grid.js). It was
+  // 3.4 ms and 6 ms for the 36,864 of before: the loops in grid.js were tightened. There are
   // 5 reads a second now where there were 2.9. What the read-back from the GPU costs on the
   // headset is not known (depth.js); the heartbeat in the hub's log shows the frame rate.
   depthMs: clamp(numberOr('depthMs', 200), 100, 2000), // read the depth image this often, while there is something new to see (see settleScans)
