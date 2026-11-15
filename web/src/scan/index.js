@@ -1,7 +1,8 @@
 // scan — field obstacle map from the headset's view of the room (role A).
 //
 // Sends: hazard:update (docs/INTERFACES.md section 3): a floor grid in room coordinates,
-//        0 = passable, 1 = obstacle, 255 = not seen yet. At most four times a second, only on change.
+//        0 = passable, 1 = obstacle, 255 = not seen yet. Only on change, in the frame after the
+//        depth read that changed it: up to ten times a second.
 //
 // Two layers on the same cells, merged when the grid is sent (mergeLayers in grid.js).
 //
@@ -14,14 +15,16 @@
 //   - If the headset has no room scan, nothing arrives from it and every cell stays "not seen".
 //     The wearer has to run Space Setup once (Settings > Environment setup).
 //   - Space Setup stores a wall as one rectangle, so an open doorway is closed in the grid,
-//     until the wearer walks through it (below).
+//     and stays closed: nothing takes structure off the room layer.
 //
-// Live depth (when the session has `depth-sensing`: field mode, or ?depth=1): five times a
-// second the depth image of the left eye is laid over the same cells (depth.js, grid.js). It
-// adds what stands within depthRangeM of the wearer now (4 m), so a chair put down after the
-// scan appears. In a room the headset has no room scan of, it is the whole map: on the
-// headset every session so far had none (stats.meshes and planes were 0), so how far this
-// reaches and how often it reads is how far and how fast the map grows.
+// Live depth (when the session has `depth-sensing`: field mode, or ?depth=1): ten times a
+// second (depthMs; less often by itself when a read turns out to be slow, depthBusy) the depth
+// image of the left eye is laid over the same cells (depth.js, grid.js). It adds what stands
+// within depthRangeM of the wearer now (5 m, as far as the headset's 320 x 320 depth image can
+// still clear what it marks), so a chair put down after the scan appears. In a room the headset
+// has no room scan of, it is the whole map: on the headset every session so far had none
+// (stats.meshes and planes were 0), so how far this reaches and how often it reads is how far
+// and how fast the map grows.
 // What it has marked stays on the map when the wearer walks away or looks elsewhere: an
 // obstacle is only taken off again once the sensor sees clear floor where it stood. It never
 // clears structure that came from the room scan. Not yet checked on the headset.
@@ -32,12 +35,17 @@
 // out of it are kept (the archive) and come back when the wearer returns. `hazard:update` is
 // always the window, so its originXZ changes when the window moves. Not yet checked on the headset.
 //
-// Settling (grid.js): a cell that keeps giving the same answer is settled and the reads go to
-// what is new; settled ground in view is still looked at again every refreshS, on a clock of
-// its own, so a chair put down on it, or taken away, shows within 1 to 2 seconds.
+// Every read counts for every cell in view: something put down is on the map after setScans
+// reads (0.2 s; 0.3 s beyond farM) and off it after clearScans reads of bare floor (0.3 s),
+// wherever the head looks. Settling (grid.js), which leaves alone the cells that keep giving
+// the same answer and looks at them again every refreshS, is off by default: it made known
+// ground slower to follow the room and saved no reads on the headset (see settleScans).
+// ?settle=1 turns it on.
 //
-// Where the wearer has walked is clear floor: the cells under them are freed at once and the
-// room scan cannot block them again (standAt, room.js).
+// Standing on a marked cell does not clear it. An obstacle comes off the map only when live
+// depth sees bare floor where it stood; a wearer who walks into one is warned instead
+// (field/zone.js raises the 'hazard-zone' alert). Until 2026-11-15 the cells under the wearer
+// were freed at once.
 //
 // The map is kept on the Jetson (memory.js): the tiles that changed go to the hub as
 // `map:store` (at most every storeMs) and the hub writes them to disk. When a session starts
@@ -60,6 +68,9 @@ import { TILES, tileKey, parseKey, inTiles, follow, cutTile, assemble, moveWindo
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
+// How far live depth looks, along the floor (SCAN.depthRangeM; leaveM and glowFullM follow it).
+const depthRangeM = clamp(numberOr('depthRange', 5), 1.5, 8);
+
 export const SCAN = {
   cellM: 0.1, // the window is TILES.window x TILES.cells of these per side (tiles.js): 25.6 m
   followMs: 250, // how often the window is checked against where the wearer stands
@@ -68,27 +79,42 @@ export const SCAN = {
   sampleM: 0.07, // spacing of the points sampled on each triangle
   trianglesPerFrame: 1500, // budget, so a large room mesh does not stall a frame
   rescanMs: 10000, // a mesh or plane that says it changed is not rasterised again sooner than this
-  emitMs: 250, // the grid goes out at most this often (it was 600)
+  // The grid goes out at most this often, and never in the frame of a depth read. Kept below
+  // depthMs (grid.test.js), so what a read changed goes out with the next frame: with 250
+  // against a read every 200 the two beat against each other, and a change waited 144 ms on
+  // average for its turn while the map kept changing. An update costs its listeners about a
+  // millisecond now (the glow's outline is worked out for the box around the obstacles only,
+  // overlay.js; the palm map draws the grid only when it is up; a route is planned again at
+  // most every FIELD.regridMs). ?emitMs=250 is the value before.
+  emitMs: clamp(numberOr('emitMs', 80), 50, 5000),
 
   // Live depth. Range, rate and sample count can be set from the address while tuning on the
-  // headset: ?depthRange=2.5&depthMs=350&depthSamples=192 are the values before 2026-11-15.
+  // headset: ?depthRange=4&depthMs=200&depthSamples=288&settle=1&emitMs=250 are the values of
+  // the build before this one.
+  // Ten reads a second (it was five, and 2.9 before 2026-11-15). The headset's depth image is
+  // new about 30 times a second, so every read sees a new one.
   // What a read costs the processor (measured on the Jetson's Cortex-A78AE, the class of core
-  // the Quest 3 has): 3.5 ms for these 82,944 points over a floor, about 5 ms with a drop in
-  // view (a stair down: every sample beyond the edge walks the missing floor, grid.js). It was
-  // 3.4 ms and 6 ms for the 36,864 of before: the loops in grid.js were tightened. There are
-  // 5 reads a second now where there were 2.9. What the read-back from the GPU costs on the
-  // headset is not known (depth.js); the heartbeat in the hub's log shows the frame rate.
-  depthMs: clamp(numberOr('depthMs', 200), 100, 2000), // read the depth image this often, while there is something new to see (see settleScans)
+  // the Quest 3 has): about 4 ms for the 102,400 points of 320 a side over a floor with a few
+  // things on it, more with a drop in view (a stair down: one sample in four beyond the edge
+  // walks the missing floor, grid.js). What the read-back from the GPU costs on the headset is
+  // not known; both are timed (depth.js) and go to the hub's log with the heartbeat
+  // (stats.readMs), next to the frame rate.
+  depthMs: clamp(numberOr('depthMs', 100), 50, 2000), // read the depth image this often
+  // The reads may take this share of the time, no more: a read that took t ms is not followed
+  // by the next before t / depthBusy ms have passed. Up to 15 ms a read, that leaves depthMs as
+  // it is; a headset on which a read takes 30 ms reads five times a second by itself, not ten,
+  // and keeps its frame rate. ?depthBusy=1 takes the limit away.
+  depthBusy: clamp(numberOr('depthBusy', 0.15), 0.02, 1),
   // Samples per side taken from the depth image (never more than it has, depth.js). The far
   // floor decides: a 10 cm cell 3.8 m away must still get the minPoints it needs to say
   // "floor", or a chair marked there could never be cleared again. 288 does that at every
   // distance and tilt of the head tried; 256 leaves a cell at the rim now and then, and the
   // 192 of before holds to 2.4 m only (grid.test.js). For ?depthRange=5 take
   // ?depthSamples=320 (102,400 points, 4.5 ms a read).
-  depthSamples: clamp(Math.round(numberOr('depthSamples', 288)), 64, 512),
+  depthSamples: clamp(Math.round(numberOr('depthSamples', 320)), 64, 512),
   // Cells farther than this from the headset, along the floor, are left alone. 4 m (it was
   // 2.5): things are marked, and cleared again by the floor under them, out to 3.8 m.
-  depthRangeM: clamp(numberOr('depthRange', 4), 1.5, 8),
+  depthRangeM,
   bodyM: 0.8, // cells this close to the headset, along the floor, are the wearer's own hands and body
   floorNoiseM: 0.15, // a depth point within this height of y = 0 counts as floor (the real floor can sit a few cm off)
   thingMinM: 0.25, // a depth point counts as a thing from this height: a 4 % depth error lifts a floor point 7 cm
@@ -97,19 +123,35 @@ export const SCAN = {
   // ?drops=0 turns it off (a mirror-like floor may read as deeper than it is).
   dropMinM: isOff('drops') ? 0 : 0.3,
   minPoints: 3, // samples needed in a cell before a read says anything about it
-  setScans: 2, // reads in a row that must see an obstacle before it counts (2 = 0.4 s): not someone walking past
-  clearScans: 3, // floor-only reads before a live obstacle is cleared (3 = 0.6 s)
-  // Settling (grid.js): what has been read often enough is left alone, so the reads go to what is new.
-  settleScans: isOff('settle') ? 0 : 6, // same answer this many reads in a row (6 = 1.2 s): settled. ?settle=0 turns settling off
+  // Far away the image lies thin on the floor: where a floor cell would get fewer than twice
+  // this many samples, this many say "floor", and where it would not even get this many the
+  // read ends (grid.js: addDepthView, floorReachM). 2: at 5 m, with 320 samples a side and the
+  // eye at 1.45 m, a floor cell gets 2 or more in 83 to 89 reads of 100 and 3 or more in 73 to 83.
+  farPoints: 2,
+  // Beyond farM a thing has to be seen farSetScans reads in a row (0.3 s) before it counts.
+  // 4 m is where Meta says the depth image gets much less exact; nearer, nothing changes.
+  farM: 4,
+  farSetScans: 3,
+  setScans: 2, // reads in a row that must see an obstacle before it counts (2 = 0.2 s): not stray depth, nor something passing in one image
+  clearScans: 3, // floor-only reads before a live obstacle is cleared (3 = 0.3 s)
+  // Settling (grid.js): a cell that gave the same answer this many reads in a row is settled
+  // and left alone until it is looked at again (refreshS). Off (0); ?settle=1 turns it on with
+  // 6 reads (0.6 s).
+  // Why off: a settled cell is blind for refreshS at a time, so on ground the scan knew a chair
+  // put down showed after about a second where on new ground it took setScans reads; with
+  // every cell read every time, known ground follows the room as fast as new ground does
+  // (grid.test.js has the case). And what settling was for, skipping reads, did not happen on
+  // the headset: at most one read was skipped in a session (jetson/maps), because a real depth
+  // image always leaves some cell open.
+  settleScans: numberOr('settle', 0) ? 6 : 0,
+  // The next five only matter with ?settle=1.
   refreshS: 1, // settled ground in view is looked at again this long after it settled (0 = only after the wearer has been away)
   resettleScans: 2, // and settles again after this many reads that say what it already is: a chair put down or taken away shows in 1 to 2 s
   giveUpScans: 16, // in view this many reads without an answer (behind something, or too far for enough points): settled too
-  leaveM: 5.5, // a settled cell is read again when the wearer returns after being this far from it (well beyond depthRangeM, or cells at its rim would open at every step)
+  leaveM: depthRangeM + 1.5, // a settled cell is read again when the wearer returns after being this far from it (well beyond depthRangeM, or cells at its rim would open at every step)
   vantageM: 1, // a cell that gave no answer is read again when the wearer has moved about this far (or turned, or tilted the head)
   viewHalfDeg: 40, // half the width of what the depth image sees, for deciding what was in view
   forgetScans: 0, // reads out of sight before a live obstacle is forgotten; 0 = never: the map keeps what it has seen
-
-  walkedM: 0.25, // where the wearer stands, the floor within this radius is clear (about half a body width)
 
   // The map on the Jetson.
   storeMs: 2000, // a changed map goes to the hub at most this often
@@ -118,7 +160,7 @@ export const SCAN = {
   // Highlight on the floor (overlay.js), [r, g, b] 0-255.
   glowRGB: [255, 48, 48], // the fill
   glintRGB: [255, 214, 208], // where the travelling light and the sparks are brightest
-  glowFullM: 3.2, // shown in full within this distance of the wearer
+  glowFullM: 0.8 * depthRangeM, // shown in full within this distance of the wearer
   glowFadeM: 1, // beyond it, fading to 1/e every this many metres (a tenth at 5.5 m, gone by 8 m)
 };
 
@@ -139,6 +181,8 @@ let live; // what live depth sees, on the same cells
 let depthOn = false; // this session has depth-sensing and reading it has not failed
 let depthSeen = false; // the live layer holds what a recent read saw
 let lastDepth = 0; // time of the last read that got an image
+let readCostMs = 0; // what a read takes, smoothed over the last few (ms): sets how soon the next may follow (SCAN.depthBusy)
+let sendMs = 0; // how long the listeners of the last hazard:update took (ms)
 let waitFrom = 0; // time of the first read in a row that got none
 let said = {}; // what has been reported once this session
 let sent = null; // the cells of the last hazard:update
@@ -178,6 +222,7 @@ function reset() {
   depthOn = ctx.xr.has('depth-sensing') === true;
   depthSeen = false;
   waitFrom = started = 0;
+  readCostMs = 0;
   said = {};
   sent = null;
   // New coordinates (a session start or a recentre): a new run, and the stored map has to
@@ -202,7 +247,7 @@ function followHead(x, z) {
   const next = [follow(originTile[0], inTiles(x, SCAN.cellM)), follow(originTile[1], inTiles(z, SCAN.cellM))];
   if (next[0] === originTile[0] && next[1] === originTile[1]) return;
   const nextOrigin = originOf(next);
-  const { left } = moveWindow({ room: room.cells, live: live.cells, walked: room.walked }, originTile, next, archive, {
+  const { left } = moveWindow({ room: room.cells, live: live.cells }, originTile, next, archive, {
     live: {
       shift: (dCols, dRows) => live.shift(dCols, dRows, nextOrigin),
       paste: (col, row, tile) => live.restore(col, row, TILES.cells, tile),
@@ -334,17 +379,6 @@ function store(time) {
   });
 }
 
-/**
- * Where the wearer stands there is no obstacle: the cells under them are clear floor at once,
- * in both layers, and the room scan may not block them again (a doorway that was shut when the
- * room was scanned stays open once someone has walked through it). Live depth still can: a
- * chair put there afterwards is found.
- */
-function standAt(x, z) {
-  if (room.stoodAt(x, z, SCAN.walkedM)) dirty = true;
-  if (live.freeAround(x, z, SCAN.walkedM)) dirty = true;
-}
-
 export function init(context) {
   ctx = context;
   reset();
@@ -363,7 +397,8 @@ export function init(context) {
   ctx.renderer.xr.hasDepthSensing = () => false;
   initOverlay(ctx, SCAN);
   window.__scan = {
-    stats: () => ({ ...stats, queued: room.pending, run, stored: !!stored, trusted, reads, skips, refreshes, settled: live?.settledCount ?? 0, archived: archive.size, windowXZ: [...origin] }),
+    stats: () => ({ ...stats, queued: room.pending, run, stored: !!stored, trusted, reads, skips, refreshes, settled: live?.settledCount ?? 0, archived: archive.size, windowXZ: [...origin], readCostMs: Math.round(readCostMs * 10) / 10 }),
+    config: SCAN, // the numbers in use, with what the address set (?depthMs, ?depthRange, ?depthSamples, ?emitMs, ?settle ...)
   };
 }
 
@@ -384,17 +419,14 @@ export function update(frame) {
   if (toStore && time - lastStore >= SCAN.storeMs) store(time);
 }
 
-// Keep the window around the wearer, and free the floor they stand on.
+// Keep the window around the wearer. Not every frame: a step is far less than the margin the
+// window has on every side.
 function followWearer(xrFrame, refSpace, time) {
+  if (time - lastFollow < SCAN.followMs) return;
   const at = xrFrame.getViewerPose(refSpace)?.transform.position;
   if (!at) return;
-  // Not every frame: a step is far less than the margin the window has on every side.
-  if (time - lastFollow >= SCAN.followMs) {
-    lastFollow = time;
-    followHead(at.x, at.z);
-  }
-  // Every frame: at walking pace a quarter of a second is a longer step than the body is wide.
-  if (Number.isFinite(at.x) && Number.isFinite(at.z)) standAt(at.x, at.z);
+  lastFollow = time;
+  followHead(at.x, at.z);
 }
 
 // After a recentre every stored coordinate is in the old frame: start over. The space in use
@@ -422,7 +454,7 @@ function warnIfNoRoom(time) {
 // Lay the depth image over the live layer when a read is due. True when this frame read one.
 function readLive(frame) {
   const { xrFrame, refSpace, time } = frame;
-  if (!(depthOn && time - lastDepth >= SCAN.depthMs)) return false;
+  if (!(depthOn && time - lastDepth >= readEveryMs(SCAN.depthMs, readCostMs, SCAN.depthBusy))) return false;
   let read = false;
   try {
     // Where the wearer is and faces, on the floor: decides what is in view (grid.js).
@@ -454,6 +486,9 @@ function readLive(frame) {
       waitFrom = 0;
       depthSeen = true;
       if (live.commit(view)) dirty = true;
+      // What this read took, smoothed over the last few: one slow read (a frame the browser
+      // was busy in) does not slow the scan down, a headset on which every read is slow does.
+      readCostMs += (depthImage.costMs - readCostMs) * (readCostMs ? 0.25 : 1);
     } else if (!view) {
       // nothing to read this time (all settled), or no head pose yet
     } else if (!waitFrom) {
@@ -504,7 +539,12 @@ function send(time) {
   toStore = true;
   // archived, windowXZ: how many tiles are kept outside the window and where the window is, for diagnosis.
   // depthPx: the depth image's width, height and the samples per side taken from it (0 until the first read).
-  stats = { ...room.counts, ...counts, stored: kept, settled: live.settledCount, reads, skips, refreshes, archived: archive.size, windowXZ: [...origin], depthPx: [depthImage.width, depthImage.height, depthImage.samples] };
+  // readMs: the slowest depth read since the last update, [ms waiting for the GPU, ms placing the points] (depth.js).
+  // sendMs: how long the update before this one took everything that listens to it (the glow, the palm map).
+  const tenth = (ms) => Math.round(ms * 10) / 10;
+  stats = { ...room.counts, ...counts, stored: kept, settled: live.settledCount, reads, skips, refreshes, archived: archive.size, windowXZ: [...origin], depthPx: [depthImage.width, depthImage.height, depthImage.samples], reachM: Math.round(depthImage.reachM * 100) / 100, readMs: [tenth(depthImage.gpuMs), tenth(depthImage.pointsMs)], sendMs: tenth(sendMs) };
+  depthImage.gpuMs = depthImage.pointsMs = 0;
+  const sendFrom = performance.now();
   ctx.bus.emit('hazard:update', {
     originXZ: [...origin],
     cellSizeM: SCAN.cellM,
@@ -515,5 +555,14 @@ function send(time) {
     source: depthSeen ? 'room-scan+depth' : 'room-scan',
     stats,
   });
+  sendMs = performance.now() - sendFrom;
   return true;
+}
+
+/**
+ * How long to wait after a read before the next: `everyMs`, or longer when a read takes so long
+ * (`costMs`) that reading that often would take more than the share `busy` of the time.
+ */
+export function readEveryMs(everyMs, costMs, busy) {
+  return Math.max(everyMs, busy > 0 ? costMs / busy : 0);
 }

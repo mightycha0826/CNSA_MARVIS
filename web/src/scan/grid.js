@@ -20,11 +20,12 @@ export const OBSTACLE = 1;
 export const UNKNOWN = 255;
 
 /**
- * cfg: thingMinM, headM, floorNoiseM, dropMinM (0 or absent: drops are not marked), minPoints, setScans, clearScans, forgetScans, and for
+ * cfg: thingMinM, headM, floorNoiseM, dropMinM (0 or absent: drops are not marked), minPoints, setScans, clearScans, forgetScans,
+ * farM and farSetScans (absent: every cell takes setScans), and for
  * settling: settleScans, resettleScans, giveUpScans, leaveM, vantageM, depthRangeM, bodyM, viewHalfDeg (SCAN in index.js).
  * commitAll: commit() looks at every cell every time, as it did before 2026-11-15 (the test that compares the two).
  *
- * Settling (cfg.settleScans > 0): a cell that has been read settleScans times in a row with the
+ * Settling (cfg.settleScans > 0; off by default, SCAN.settleScans says why): a cell that has been read settleScans times in a row with the
  * same answer is settled and is not read any more: points that fall into it are dropped. So is
  * a cell that stayed in view giveUpScans times without ever giving an answer (behind something,
  * under the lower edge of the image). The sensor's time then goes to cells that are still open,
@@ -61,7 +62,7 @@ export function createGrid(cols, rows, cellM, originXZ, cfg) {
   // What a commit has to look at. A cell that got no point in this read, has no sighting that
   // waits for its next one, and lies out of the view's reach is left exactly as it is by
   // commit(), so its loop runs over the box around the other cells only: a few thousand within
-  // reach of the wearer, of the 65,536 in the scan's window, five times a second.
+  // reach of the wearer, of the 65,536 in the scan's window, ten times a second.
   // A box is [col0, col1, row0, row1]; it is empty while col0 > col1.
   const touched = [cols, -1, rows, -1]; // cells that got a point since the last commit
   const waiting = [cols, -1, rows, -1]; // cells that hold a sighting the next read has to confirm or drop
@@ -98,8 +99,12 @@ export function createGrid(cols, rows, cellM, originXZ, cfg) {
   return {
     cells,
 
-    /** Add one point in room coordinates to the current read. */
-    add(x, y, z) {
+    /**
+     * Add one point in room coordinates to the current read.
+     * @param weight how many points a floor point counts for: 1, or more where the depth image
+     *               lies thin on the floor (addDepthView). A thing point always counts once.
+     */
+    add(x, y, z, weight = 1) {
       const col = Math.floor((x - origin[0]) / cellM);
       const row = Math.floor((z - origin[1]) / cellM);
       if (!(col >= 0 && row >= 0 && col < cols && row < rows)) return; // also drops NaN
@@ -108,7 +113,7 @@ export function createGrid(cols, rows, cellM, originXZ, cfg) {
       // A thing standing here, or ground far enough below the floor that stepping here is a fall.
       if ((y > cfg.thingMinM && y < cfg.headM) || y < dropBelow) obstacle[i]++;
       // Between floorNoiseM and thingMinM (and as far below the floor) a noisy depth point could be either: it counts as neither.
-      else if (Math.abs(y) <= cfg.floorNoiseM) floor[i]++;
+      else if (Math.abs(y) <= cfg.floorNoiseM) floor[i] += weight;
       else return;
       if (col < touched[0]) touched[0] = col;
       if (col > touched[1]) touched[1] = col;
@@ -148,6 +153,8 @@ export function createGrid(cols, rows, cellM, originXZ, cfg) {
         }
       }
       whole = false;
+      // Beyond farM a thing has to be seen farSetScans times in a row (the far rule, below).
+      const far2 = view && cfg.farM > 0 && cfg.farSetScans > cfg.setScans ? cfg.farM ** 2 : Infinity;
       touched[0] = waiting[0] = cols;
       touched[2] = waiting[2] = rows;
       touched[1] = touched[3] = waiting[1] = waiting[3] = -1;
@@ -159,8 +166,17 @@ export function createGrid(cols, rows, cellM, originXZ, cfg) {
           const answered = obstacle[i] >= cfg.minPoints || (floor[i] >= cfg.minPoints && obstacle[i] === 0);
           if (obstacle[i] >= cfg.minPoints) {
             // Seen in setScans reads in a row before it counts: someone walking past and stray depth do not.
-            if (sightings[i] < cfg.setScans) sightings[i]++;
-            if (sightings[i] === cfg.setScans) {
+            // Farther than farM from the wearer it takes farSetScans: depth is less exact there,
+            // nothing that far away is in the way yet, and a cell that comes and goes at that
+            // distance is a new map, a new glow and a new route each time.
+            let need = cfg.setScans;
+            if (far2 < Infinity) {
+              const dx = origin[0] + (c + 0.5) * cellM - view.x;
+              const dz = origin[1] + (r + 0.5) * cellM - view.z;
+              if (dx * dx + dz * dz > far2) need = cfg.farSetScans;
+            }
+            if (sightings[i] < need) sightings[i]++;
+            if (sightings[i] >= need) {
               hold[i] = cfg.clearScans;
               next = OBSTACLE;
             }
@@ -288,37 +304,6 @@ export function createGrid(cols, rows, cellM, originXZ, cfg) {
     },
 
     /**
-     * The wearer has stood here: every cell within `radiusM` of (x, z) is clear floor, now,
-     * whatever was believed before. The cells stay open, so something put down there later is
-     * still found. True when a cell changed.
-     */
-    freeAround(x, z, radiusM) {
-      const k = Math.ceil(radiusM / cellM);
-      const c0 = Math.floor((x - origin[0]) / cellM);
-      const r0 = Math.floor((z - origin[1]) / cellM);
-      let changed = false;
-      for (let r = r0 - k; r <= r0 + k; r++) {
-        for (let c = c0 - k; c <= c0 + k; c++) {
-          if (!(c >= 0 && r >= 0 && c < cols && r < rows)) continue;
-          const dx = origin[0] + (c + 0.5) * cellM - x;
-          const dz = origin[1] + (r + 0.5) * cellM - z;
-          if (dx * dx + dz * dz > radiusM * radiusM) continue;
-          const i = r * cols + c;
-          if (cells[i] !== PASSABLE) {
-            cells[i] = PASSABLE;
-            changed = true;
-          }
-          sightings[i] = hold[i] = same[i] = idle[i] = 0;
-          if (settled[i]) {
-            settled[i] = away[i] = gaveUp[i] = 0;
-            settledCount--;
-          }
-        }
-      }
-      return changed;
-    },
-
-    /**
      * Lay back a square of cells that were in the window before (`values`, side x side, at
      * column col, row row). What is known comes back settled and marked as left behind: it
      * is not read from where the wearer stands now, and is opened like any cell the wearer
@@ -395,6 +380,27 @@ export function mergeLayers(room, live) {
   return { cells, obstacles, floor, depth };
 }
 
+/**
+ * How many samples of a depth image land in one floor cell 1 m from the camera (along its
+ * axis), seen from eyeM above the floor: at depth d it is this number over d cubed. One sample
+ * stands for d^3 * du * dv / eyeM square metres of floor, du and dv being the step from sample
+ * to sample as tangents (2 / (P[0] * samples) and 2 / (P[5] * samples)); that holds however the
+ * head is turned or tilted. 0 when the camera is not above the floor.
+ */
+export function floorSamplesAt1m(P, samples, eyeM, cellM) {
+  return eyeM > 0 ? (cellM * cellM * eyeM * P[0] * P[5] * samples * samples) / 4 : 0;
+}
+
+/**
+ * How far along the floor a depth image can clear what it marks: the distance at which a floor
+ * cell still gets `points` of its samples. Farther out, a thing would be marked by the many
+ * samples on its side and stay on the map after it is gone, for want of samples on the floor.
+ * A Quest 3 eye at 1.6 m, 2 points: 5.4 m with 320 samples a side, 5.0 with 288, 3.8 with 192.
+ */
+export function floorReachM(P, samples, eyeM, cellM, points) {
+  return Math.cbrt(floorSamplesAt1m(P, samples, eyeM, cellM) / points);
+}
+
 // Scratch for addDepthView, one entry per sample column: the part of each sample's direction
 // that depends on the column alone. Grown when a larger sample count comes; never per read.
 let colX = new Float64Array(0);
@@ -406,14 +412,26 @@ let colZ = new Float64Array(0);
  * @param depthAt (u, v, i, j) -> distance from the camera plane in metres; u, v in 0..1 with
  *                (0, 0) at the bottom left of the image, and i, j the same sample as column and
  *                row (0 .. depthSamples - 1), for a caller that holds exactly that many; 0 when unknown
- * @param cfg depthSamples, depthRangeM, bodyM, cellM, thingMinM, dropMinM
+ * @param cfg depthSamples, depthRangeM, bodyM, cellM, thingMinM, dropMinM, minPoints, farPoints
+ * @returns how far this read reached along the floor, in metres: depthRangeM, or less (below)
  */
 export function addDepthView(grid, depthAt, P, M, cfg) {
   const s = cfg.depthSamples;
+  // The samples thin out on the floor with the cube of the distance, so what a floor cell needs
+  // to say "floor" follows them: minPoints where it gets plenty, farPoints where it would get
+  // fewer than twice that (a floor point then counts for more, grid.add), and where it would
+  // not even get farPoints the read ends: nothing is marked there, because the floor could not
+  // clear it again. So the scan reaches depthRangeM only if the image is fine enough for it: a
+  // smaller depth image than asked for, ?depthSamples, or a wearer who sits down shorten it.
+  const perCell = floorSamplesAt1m(P, s, M[13], cfg.cellM);
+  const farPoints = cfg.farPoints > 0 ? Math.min(cfg.farPoints, cfg.minPoints) : cfg.minPoints;
+  const reach = perCell > 0 ? Math.min(cfg.depthRangeM, Math.cbrt(perCell / farPoints)) : cfg.depthRangeM;
+  const thin = perCell > 0 && farPoints < cfg.minPoints ? Math.cbrt(perCell / (2 * farPoints)) : Infinity; // depth beyond which farPoints will do
+  const farWeight = Math.ceil(cfg.minPoints / farPoints);
   const nearest = cfg.bodyM ** 2;
-  const farthest = cfg.depthRangeM ** 2;
+  const farthest = reach ** 2;
   const nearestThing = (cfg.bodyM + 2 * cfg.cellM) ** 2;
-  const farthestThing = (cfg.depthRangeM - 2 * cfg.cellM) ** 2;
+  const farthestThing = (reach - 2 * cfg.cellM) ** 2;
   const thingMinM = cfg.thingMinM;
   const dropMinM = cfg.dropMinM > 0 ? cfg.dropMinM : 0;
   const cellM = cfg.cellM;
@@ -460,13 +478,6 @@ export function addDepthView(grid, depthAt, P, M, cfg) {
       const along = hx * hx + hz * hz;
       const wy = oy + d * (colY[i] + rowY);
       if (dropMinM > 0 && wy < -dropMinM && Number.isFinite(wy) && oy > 0) {
-        // One sample in four walks the stretch (every other column of every other row). Each
-        // walk lays about two points in every cell it crosses, so every sample doing it laid
-        // far more than a cell needs: at 288 samples a side a read with a drop in view cost
-        // nine times the work of before today (now a little over twice, for five times the
-        // ground), and two stray too-far samples through one cell were enough to mark a drop on
-        // bare floor. The strip behind a real edge is still marked in full (grid.test.js).
-        if ((i | j) & 1) continue;
         // The ray went through where the floor should be and met ground lower down: the floor
         // ends here. It is missing from where the ray crossed floor level to where it landed,
         // and that whole stretch is marked: the near part of the lower ground is hidden behind
@@ -476,10 +487,14 @@ export function addDepthView(grid, depthAt, P, M, cfg) {
         const t = oy / (oy - wy); // the part of the way from the eye to the point at which the ray is at floor level
         const ex = hx * t;
         const ez = hz * t;
-        const stretch = Math.hypot(hx - ex, hz - ez);
-        // A point a cell along the stretch: with several rays through every cell that marks it,
-        // and one stray ray (a single point in each cell it crosses) can no longer do so with one other.
-        const steps = Math.min(40, Math.ceil(stretch / cellM));
+        // One sample in four walks the stretch (every other column of every other row), a point
+        // a cell. Every sample doing it laid far more than a cell needs (at 288 samples a side a
+        // read with a drop in view cost nine times the work of before 2026-11-15), and two stray
+        // too-far samples through one cell were enough to mark a drop on bare floor. The other
+        // three lay only the point where their ray crossed floor level: that is where the edge
+        // is, and it gives the first cells behind an edge as many points as a floor cell gets,
+        // so a drop is marked from its edge on as far out as floor is told (grid.test.js).
+        const steps = (i | j) & 1 ? 0 : Math.min(40, Math.ceil(Math.hypot(hx - ex, hz - ez) / cellM));
         for (let k = 0; k <= steps; k++) {
           const f = steps ? k / steps : 0;
           const px = ex + (hx - ex) * f;
@@ -494,9 +509,10 @@ export function addDepthView(grid, depthAt, P, M, cfg) {
       // Things count two cells inside those limits only. A cell the limit cuts through would be
       // marked from the strip that is in range, and that strip of floor is too thin to clear it.
       if (wy > thingMinM && !(along >= nearestThing && along <= farthestThing)) continue;
-      grid.add(ox + hx, wy, oz + hz);
+      grid.add(ox + hx, wy, oz + hz, d > thin ? farWeight : 1);
     }
   }
+  return reach;
 }
 
 /**

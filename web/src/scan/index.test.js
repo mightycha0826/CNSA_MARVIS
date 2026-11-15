@@ -223,25 +223,23 @@ test('map:stored that is not a map of these tiles is ignored', () => {
   }
 });
 
-test('where the wearer has walked is clear floor at once, and the room model cannot close it again', () => {
+test('a marked cell the wearer walks into stays marked: standing on an obstacle does not take it off the map', () => {
   // A wall across the corridor that the room model has (a door that was shut when the room was scanned).
   const here = head[0];
   const DOOR = quad([[here + 1.5, 0, -3.05], [here + 1.5, 0, 2.95], [here + 1.5, 2.5, 2.95], [here + 1.5, 2.5, -3.05]]);
   meshes.add(DOOR);
   frames(12000); // the room model is rasterised again (at most every rescanMs)
   let h = taken('hazard:update').at(-1);
-  assert.equal(cellAt(h, here + 1.5, 0), 1, 'the wall is in the map');
-  // Walk through it.
-  walkTo(here + 3);
-  h = taken('hazard:update').at(-1);
-  // Cells whose centre is within walkedM of the path (the path runs along z = 0).
-  for (const dz of [-0.15, -0.05, 0.05, 0.15]) assert.equal(cellAt(h, here + 1.5, dz), 0, `where the wearer went through (z ${dz}) is floor`);
-  assert.equal(cellAt(h, here + 1.5, 1.5), 1, 'the wall beside the path stands');
-  // The model changes again (the Quest refreshes it): the opening stays.
-  DOOR.lastChangedTime++;
-  DOOR.vertices[1] += 0.001;
-  frames(12000);
-  const again = taken('hazard:update').at(-1) ?? h;
-  assert.equal(cellAt(again, here + 1.5, 0), 0, 'still open after the room model was rasterised again');
+  const across = [-0.25, -0.15, -0.05, 0.05, 0.15, 0.25, 1.5];
+  for (const dz of across) assert.equal(cellAt(h, here + 1.5, dz), 1, `the wall is in the map (z ${dz})`);
+  const walls = h.stats.obstacles;
+  // Walk into it and stand there, then on through it and back. (Until 2026-11-15 the cells within
+  // 0.25 m of the wearer were freed at once, and the room model could not close them again.)
+  for (const x of [here + 1.5, here + 3, here + 1.5, here]) {
+    walkTo(x);
+    h = taken('hazard:update').at(-1) ?? h;
+    for (const dz of across) assert.equal(cellAt(h, here + 1.5, dz), 1, `still marked with the wearer at x ${x} (z ${dz})`);
+    assert.equal(h.stats.obstacles, walls, 'no marked cell was taken off anywhere');
+  }
   meshes.delete(DOOR);
 });

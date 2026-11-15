@@ -1,7 +1,7 @@
 // Obstacle highlight on the real floor (field mode): each obstacle's footprint is filled with a
 // soft translucent red, the way a phone shades what it has picked out of a photo before
 // erasing it, with a light that travels across it and a few sparks. It is shown in full within
-// 3.2 m of the wearer (SCAN.glowFullM) and fades out exponentially beyond. There is no outline and no halo: on the headset a bright line around every obstacle was more than the room needed.
+// 4 m of the wearer (SCAN.glowFullM: four fifths of the scan's range) and fades out exponentially beyond. There is no outline and no halo: on the headset a bright line around every obstacle was more than the room needed.
 // Nothing blocky: the edge of the fill is drawn from a distance field, so it follows the shape
 // and not the 10 cm cells, and fades out over a few centimetres.
 //
@@ -14,52 +14,108 @@ export const OVERLAY = {
   reachCells: 2.5, // the field runs from 0 to 1 over this many cells either side of an outline
 };
 
+// Scratch for outlineField, grown when a larger box comes and kept between calls: the scan can
+// send ten grids a second, and two float arrays of the whole window each time is work for nothing.
+let scratchOut = new Float32Array(0);
+let scratchIn = new Float32Array(0);
+
+// The two passes of a chamfer distance over a w x h block: afterwards d holds, for every cell,
+// the shortest way to a cell that started at 0, in steps of 1 (along a row or column) and
+// sqrt 2 (diagonally).
+function relax(d, w, h) {
+  for (let r = 0; r < h; r++) {
+    for (let c = 0; c < w; c++) {
+      const i = r * w + c;
+      let best = d[i];
+      if (c > 0) best = Math.min(best, d[i - 1] + 1);
+      if (r > 0) {
+        best = Math.min(best, d[i - w] + 1);
+        if (c > 0) best = Math.min(best, d[i - w - 1] + Math.SQRT2);
+        if (c < w - 1) best = Math.min(best, d[i - w + 1] + Math.SQRT2);
+      }
+      d[i] = best;
+    }
+  }
+  for (let r = h - 1; r >= 0; r--) {
+    for (let c = w - 1; c >= 0; c--) {
+      const i = r * w + c;
+      let best = d[i];
+      if (c < w - 1) best = Math.min(best, d[i + 1] + 1);
+      if (r < h - 1) {
+        best = Math.min(best, d[i + w] + 1);
+        if (c < w - 1) best = Math.min(best, d[i + w + 1] + Math.SQRT2);
+        if (c > 0) best = Math.min(best, d[i + w - 1] + Math.SQRT2);
+      }
+      d[i] = best;
+    }
+  }
+}
+
 /**
  * How far each cell is from the outline of the obstacles, as bytes: 128 on the outline, rising
  * to 255 `reach` cells inside an obstacle and falling to 0 `reach` cells outside. Sampled with
  * smoothing on the GPU, the 128 line is a smooth outline. Floor and unknown cells are both
  * "outside". Distances are along rows, columns and diagonals (a chamfer), close enough for a glow.
+ *
+ * Only the box around the obstacles is worked on (with a margin wider than `reach`): everything
+ * outside it is 0, and the distances inside it come out as they would over the whole grid
+ * (overlay.test.js compares the two). In a room that is a few thousand cells of the window's 65,536.
+ * @param into the bytes to write to (cols x rows), for a caller that keeps them; a new array without
  */
-export function outlineField(cells, cols, rows, reach = OVERLAY.reachCells) {
+export function outlineField(cells, cols, rows, reach = OVERLAY.reachCells, into = null) {
   const n = cols * rows;
+  const field = into ?? new Uint8Array(n);
+  if (into) field.fill(0);
+  // The box that holds every obstacle cell.
+  let c0 = cols;
+  let c1 = -1;
+  let r0 = rows;
+  let r1 = -1;
+  for (let r = 0, i = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++, i++) {
+      if (cells[i] !== 1) continue;
+      if (c < c0) c0 = c;
+      if (c > c1) c1 = c;
+      if (r < r0) r0 = r;
+      r1 = r;
+    }
+  }
+  if (c1 < 0) return field; // no obstacle: nothing to outline
+  // A cell beyond the margin is more than reach + 0.5 cells from every obstacle, which is where
+  // the field reaches 0. And every obstacle cell has its nearest free cell inside the box: the
+  // ring of the margin is free all the way round, where the grid goes that far.
+  const margin = Math.ceil(reach) + 1;
+  c0 = Math.max(0, c0 - margin);
+  c1 = Math.min(cols - 1, c1 + margin);
+  r0 = Math.max(0, r0 - margin);
+  r1 = Math.min(rows - 1, r1 + margin);
+  const w = c1 - c0 + 1;
+  const h = r1 - r0 + 1;
+  if (scratchOut.length < w * h) {
+    scratchOut = new Float32Array(w * h);
+    scratchIn = new Float32Array(w * h);
+  }
   const FAR = 1e3;
   // Distance to the nearest cell of the other kind, in cells, for both kinds at once.
-  const out = new Float32Array(n); // for cells outside: distance to the nearest obstacle
-  const inn = new Float32Array(n); // for cells inside: distance to the nearest free cell
-  for (let i = 0; i < n; i++) {
-    const obstacle = cells[i] === 1;
-    out[i] = obstacle ? 0 : FAR;
-    inn[i] = obstacle ? FAR : 0;
+  const out = scratchOut; // for cells outside: distance to the nearest obstacle
+  const inn = scratchIn; // for cells inside: distance to the nearest free cell
+  for (let r = 0; r < h; r++) {
+    for (let c = 0; c < w; c++) {
+      const obstacle = cells[(r0 + r) * cols + c0 + c] === 1;
+      out[r * w + c] = obstacle ? 0 : FAR;
+      inn[r * w + c] = obstacle ? FAR : 0;
+    }
   }
-  const relax = (d) => {
-    const pass = (from, to, step) => {
-      for (let r = from; r !== to; r += step) {
-        for (let c = from === 0 ? 0 : cols - 1; c >= 0 && c < cols; c += step) {
-          const i = r * cols + c;
-          let best = d[i];
-          const rr = r - step;
-          const cc = c - step;
-          if (cc >= 0 && cc < cols) best = Math.min(best, d[i - step] + 1);
-          if (rr >= 0 && rr < rows) {
-            best = Math.min(best, d[rr * cols + c] + 1);
-            if (cc >= 0 && cc < cols) best = Math.min(best, d[rr * cols + cc] + Math.SQRT2);
-            const co = c + step;
-            if (co >= 0 && co < cols) best = Math.min(best, d[rr * cols + co] + Math.SQRT2);
-          }
-          d[i] = best;
-        }
-      }
-    };
-    pass(0, rows, 1);
-    pass(rows - 1, -1, -1);
-  };
-  relax(out);
-  relax(inn);
-  const field = new Uint8Array(n);
-  for (let i = 0; i < n; i++) {
-    // A cell centre is half a cell from its own edge: the outline runs between the two kinds.
-    const signed = cells[i] === 1 ? inn[i] - 0.5 : -(out[i] - 0.5);
-    field[i] = Math.round(255 * Math.min(1, Math.max(0, 0.5 + signed / (2 * reach))));
+  relax(out, w, h);
+  relax(inn, w, h);
+  for (let r = 0; r < h; r++) {
+    for (let c = 0; c < w; c++) {
+      const i = (r0 + r) * cols + c0 + c;
+      const k = r * w + c;
+      // A cell centre is half a cell from its own edge: the outline runs between the two kinds.
+      const signed = cells[i] === 1 ? inn[k] - 0.5 : -(out[k] - 0.5);
+      field[i] = Math.round(255 * Math.min(1, Math.max(0, 0.5 + signed / (2 * reach))));
+    }
   }
   return field;
 }
@@ -109,7 +165,7 @@ void main() {
 }`;
 
 /** @param cfg { glowRGB, glintRGB } each [r, g, b] 0-255, glowFullM, glowFadeM (SCAN in index.js) */
-export function initOverlay(ctx, { glowRGB, glintRGB, glowFullM = 3.2, glowFadeM = 1 }) {
+export function initOverlay(ctx, { glowRGB, glintRGB, glowFullM = 4, glowFadeM = 1 }) {
   let floor = null;
   const rgb = (v) => new THREE.Color().setRGB(v[0] / 255, v[1] / 255, v[2] / 255, THREE.SRGBColorSpace);
 
@@ -153,7 +209,7 @@ export function initOverlay(ctx, { glowRGB, glintRGB, glowFullM = 3.2, glowFadeM
     const depth = rows * cellSizeM;
     floor.scale.set(width, 1, depth);
     floor.position.set(originXZ[0] + width / 2, 0.01, originXZ[1] + depth / 2);
-    uniforms.field.value.image.data.set(outlineField(cells, cols, rows));
+    outlineField(cells, cols, rows, OVERLAY.reachCells, uniforms.field.value.image.data);
     uniforms.field.value.needsUpdate = true;
   });
 }

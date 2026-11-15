@@ -4,8 +4,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
-import { SCAN } from './index.js';
-import { createGrid, viewOf, addDepthView, depthBufferToMeters, depthTable, mergeLayers, PASSABLE, OBSTACLE, UNKNOWN } from './grid.js';
+import { SCAN, readEveryMs } from './index.js';
+import { createGrid, viewOf, addDepthView, floorReachM, depthBufferToMeters, depthTable, mergeLayers, PASSABLE, OBSTACLE, UNKNOWN } from './grid.js';
 import { TILES, moveWindow } from './tiles.js';
 
 // A 16 m grid around the origin: the arithmetic is the same on the scan's larger window.
@@ -50,11 +50,11 @@ function read(grid, camera, thing) {
 
 // The depth image of a Quest 3 eye (tangents left 1.376, right 0.839, up 0.966, down 1.428), at
 // standing height, looking at the floor `ahead` metres in front.
-function questEye(ahead) {
+function questEye(ahead, eyeM = 1.6) {
   const camera = new THREE.PerspectiveCamera();
   camera.projectionMatrix.makePerspective(-0.1376, 0.0839, 0.0966, -0.1428, 0.1, 100);
   camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
-  camera.position.set(0, 1.6, 0);
+  camera.position.set(0, eyeM, 0);
   camera.lookAt(0, 0.3, -ahead);
   camera.updateMatrixWorld();
   return camera;
@@ -104,6 +104,28 @@ test('taking the chair away clears it after clearScans floor-only reads, not bef
   assert.ok(!grid.cells.includes(OBSTACLE));
   assert.equal(grid.cells[cellOf(0.5, -0.6)], PASSABLE);
   assert.equal(read(grid, camera, null), false); // nothing changed: no new hazard:update
+});
+
+test('an obstacle the wearer walks into stays on the map: the cells at their feet are not read, and nothing else clears them', () => {
+  const grid = newGrid();
+  const far = eye();
+  for (let i = 0; i < SCAN.setScans; i++) read(grid, far, CHAIR);
+  const marked = () => grid.cells.reduce((n, c) => n + (c === OBSTACLE), 0);
+  const cells = marked();
+  assert.ok(cells >= 9, `${cells} cells of chair`);
+  // The wearer stands where it was marked (a false sighting, or something low they stepped
+  // onto) and looks at the bare floor on every side. Until 2026-11-15 standing there freed it.
+  for (const [lx, lz] of [[0, -1], [1, 0], [0, 1], [-1, 0]]) {
+    const camera = new THREE.PerspectiveCamera(90, 1, 0.1, 100);
+    camera.position.set(0.5, 1.6, -0.6);
+    camera.lookAt(0.5 + 2 * lx, 0, -0.6 + 2 * lz);
+    camera.updateMatrixWorld();
+    for (let i = 0; i < SCAN.clearScans * 2; i++) read(grid, camera, null);
+    assert.equal(marked(), cells, `still marked, looking towards ${lx}, ${lz}`);
+  }
+  // Seen again from outside, with bare floor where it stood, it goes in the usual clearScans reads.
+  for (let i = 0; i < SCAN.clearScans; i++) read(grid, far, null);
+  assert.equal(marked(), 0);
 });
 
 test('a cell that is not seen keeps its state', () => {
@@ -189,7 +211,7 @@ test('a low step down is not a drop, and a drop that turns out to be floor is cl
   assert.equal(grid.cells[cellOf(0.05, -1.85)], PASSABLE);
 });
 
-test('a chair near the end of the range is marked and cleared however the head is tilted; with fewer samples it could not be cleared', () => {
+test('a chair near the end of the range is marked and cleared however the head is tilted; with fewer samples the scan does not reach that far', () => {
   const chairAt = (z) => new THREE.Box3(new THREE.Vector3(-0.25, 0, -z - 0.25), new THREE.Vector3(0.25, 0.9, -z + 0.25));
   const far = SCAN.depthRangeM - 0.4;
   // Marked after setScans reads of the chair, then cleared by clearScans reads of the floor it stood on.
@@ -206,19 +228,34 @@ test('a chair near the end of the range is marked and cleared however the head i
   };
   // Looking at the floor at one's feet, well ahead, and at the chair itself.
   for (const ahead of [1.5, 3, far]) assert.ok(setAndCleared(SCAN, questEye(ahead)), `looking ${ahead} m ahead`);
-  // Why the sample count went up with the range: at this distance too few of 192 x 192 points
-  // land in a floor cell for it to say "floor", so the chair stays on the map after it is gone.
-  assert.ok(SCAN.depthRangeM >= 4 && SCAN.depthSamples >= 288);
-  assert.equal(setAndCleared({ ...SCAN, depthSamples: 192 }, questEye(3)), false);
+  // Why the sample count goes up with the range: at this distance too few of 192 x 192 points
+  // land in a floor cell for it to say "floor", so a chair marked there would stay on the map
+  // after it is gone. The read therefore ends where the floor still answers (floorReachM), and
+  // with 192 samples that is well short of this chair: it is not marked at all.
+  const coarse = { ...SCAN, depthSamples: 192 };
+  const grid = createGrid(COLS, COLS, SCAN.cellM, ORIGIN, coarse);
+  const camera = questEye(3);
+  let reach = 0;
+  const look = (thing) => {
+    reach = addDepthView(grid, depthSensor(camera, thing), camera.projectionMatrix.elements, camera.matrixWorld.elements, coarse);
+    grid.commit();
+  };
+  for (let i = 0; i < SCAN.farSetScans; i++) look(chairAt(far));
+  assert.ok(reach < SCAN.depthRangeM - 1, `192 samples reach ${reach} m`);
+  assert.ok(!grid.cells.includes(OBSTACLE), 'left alone: its floor could not clear it');
+  for (let i = 0; i < SCAN.farSetScans; i++) look(chairAt(reach - 0.4));
+  assert.ok(grid.cells.includes(OBSTACLE), 'a chair near the end of the shorter reach is marked');
+  for (let i = 0; i < SCAN.clearScans; i++) look(null);
+  assert.ok(!grid.cells.includes(OBSTACLE), 'and cleared');
 });
 
 test('commit looks only at the cells a read can change, and the map comes out as when it looked at all of them', () => {
   // Two grids fed the same: one commits the short way, the other every cell every time (as
   // before 2026-11-15). A wearer wanders, reads land around them and elsewhere, the window
-  // shifts, tiles are laid back, the floor under the feet is freed.
+  // shifts, tiles are laid back.
   let seed = 12345;
   const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 32);
-  for (const extra of [{}, { settleScans: 0 }, { giveUpScans: 3, settleScans: 2, resettleScans: 1 }]) {
+  for (const extra of [{}, { settleScans: 6 }, { giveUpScans: 3, settleScans: 2, resettleScans: 1 }]) {
     const cfg = { ...SCAN, ...extra };
     const short = createGrid(COLS, COLS, SCAN.cellM, ORIGIN, cfg);
     const long = createGrid(COLS, COLS, SCAN.cellM, ORIGIN, { ...cfg, commitAll: true });
@@ -258,7 +295,6 @@ test('commit looks only at the cells a read can change, and the map comes out as
         else if (roll < 0.5) for (let q = 0; q < 4; q++) both((g) => g.add(x, 0, z));
       }
       assert.deepEqual(...both((g) => g.commit(view)), `what commit says changed, step ${step}`);
-      if (step % 37 === 11) both((g) => g.freeAround(hx, hz, 0.25));
       if (step % 9 === 4) {
         // The window moves by a few cells (kept near where it started, so the wearer stays on it).
         const d = [0, 1].map((k) => (Math.abs(origin[k] - ORIGIN[k]) > 1.5 ? Math.sign(origin[k] - ORIGIN[k]) * -8 : Math.floor(rnd() * 3 - 1) * 8));
@@ -425,6 +461,10 @@ test('depth-buffer values convert to metres like the projection that wrote them'
 });
 
 // ---- settling: what has been read often enough is left alone ----
+// Off by default (SCAN.settleScans 0; ?settle=1 turns it on with 6 reads): these tests run it
+// as it is when on.
+const SETTLE = { ...SCAN, settleScans: 6 };
+const settlingGrid = () => createGrid(COLS, COLS, SCAN.cellM, ORIGIN, SETTLE);
 
 // A head at (x, z), eyes level, facing -z (the default) or the direction given.
 function headAt(x, z, lookX = 0, lookZ = -1, lookY = 0) {
@@ -456,24 +496,24 @@ test('viewOf: where the head is and faces; sig changes with a step, a turn or a 
 });
 
 test('a cell read settleScans times with the same answer is settled: later points are ignored', () => {
-  const grid = newGrid();
+  const grid = settlingGrid();
   const many = SCAN.minPoints * 3;
   const view = headAt(0, 0);
   const [x, z] = [0.05, -1.55];
   for (let i = 0; i < SCAN.setScans; i++) readAt(grid, view, x, z, many, 0);
   assert.equal(grid.settledCount, 0);
-  for (let i = 0; i < SCAN.settleScans; i++) assert.equal(readAt(grid, view, x, z, many, 0), OBSTACLE);
+  for (let i = 0; i < SETTLE.settleScans; i++) assert.equal(readAt(grid, view, x, z, many, 0), OBSTACLE);
   assert.equal(grid.settledCount, 1);
   // The chair is carried off while the wearer stays near: the settled cell does not look again.
   for (let i = 0; i < SCAN.clearScans * 3; i++) assert.equal(readAt(grid, view, x, z, 0, many), OBSTACLE);
 });
 
 test('a settled cell is read again after the wearer has been leaveM away and come back', () => {
-  const grid = newGrid();
+  const grid = settlingGrid();
   const many = SCAN.minPoints * 3;
   const near = headAt(0, 0);
   const [x, z] = [0.05, -1.55];
-  for (let i = 0; i < SCAN.setScans + SCAN.settleScans; i++) readAt(grid, near, x, z, many, 0);
+  for (let i = 0; i < SCAN.setScans + SETTLE.settleScans; i++) readAt(grid, near, x, z, many, 0);
   assert.equal(grid.settledCount, 1);
   grid.reopen(headAt(0, 2)); // 3.5 m from the cell: not far enough
   grid.reopen(near);
@@ -488,12 +528,12 @@ test('a settled cell is read again after the wearer has been leaveM away and com
 });
 
 test('a cell still changing does not settle', () => {
-  const grid = newGrid();
+  const grid = settlingGrid();
   const many = SCAN.minPoints * 3;
   const view = headAt(0, 0);
   const [x, z] = [0.05, -1.55];
   for (let round = 0; round < 4; round++) {
-    for (let i = 0; i < SCAN.settleScans - 1; i++) readAt(grid, view, x, z, 0, many);
+    for (let i = 0; i < SETTLE.settleScans - 1; i++) readAt(grid, view, x, z, 0, many);
     for (let i = 0; i < SCAN.setScans; i++) readAt(grid, view, x, z, many, 0);
     assert.equal(grid.cells[cellOf(x, z)], OBSTACLE, `round ${round}: the cell still follows what is seen`);
   }
@@ -503,7 +543,7 @@ test('a cell still changing does not settle', () => {
 });
 
 test('nothing left to read in view: unsettledInView turns false, and true again for a new view', () => {
-  const grid = newGrid();
+  const grid = settlingGrid();
   const view = headAt(0, 0);
   assert.equal(grid.unsettledInView(view), true); // nothing has been read yet
   // Reads that never give an answer anywhere (a blank wall beyond range, the ceiling).
@@ -522,8 +562,9 @@ test('nothing left to read in view: unsettledInView turns false, and true again 
   assert.equal(grid.unsettledInView(down), true);
 });
 
-test('with settleScans 0 nothing ever settles', () => {
-  const grid = createGrid(COLS, COLS, SCAN.cellM, ORIGIN, { ...SCAN, settleScans: 0 });
+test('with settleScans 0, the default, nothing ever settles', () => {
+  assert.equal(SCAN.settleScans, 0);
+  const grid = newGrid();
   const view = headAt(0, 0);
   for (let i = 0; i < 40; i++) readAt(grid, view, 0.05, -1.55, SCAN.minPoints * 3, 0);
   assert.equal(grid.settledCount, 0);
@@ -560,14 +601,14 @@ function move(grid, from, to, archive) {
 }
 
 test('shift: a cell that stays in the window keeps its state and what was counted for it', () => {
-  const grid = windowGrid();
+  const grid = windowGrid(SETTLE);
   const many = SCAN.minPoints * 3;
   const view = headAt(0, 0);
   const [x, z] = [0.05, -1.55]; // a thing being confirmed: seen once less than it takes
   const [fx, fz] = [1.05, -1.55]; // floor, read once less than it takes to settle
   const [sx, sz] = [-1.05, -1.55]; // an obstacle that has settled
-  for (let i = 0; i < SCAN.setScans + SCAN.settleScans; i++) look(grid, view, sx, sz, many, 0);
-  for (let i = 0; i < SCAN.settleScans; i++) look(grid, view, fx, fz, 0, many); // the first read makes it floor, the others confirm it
+  for (let i = 0; i < SCAN.setScans + SETTLE.settleScans; i++) look(grid, view, sx, sz, many, 0);
+  for (let i = 0; i < SETTLE.settleScans; i++) look(grid, view, fx, fz, 0, many); // the first read makes it floor, the others confirm it
   for (let i = 1; i < SCAN.setScans; i++) assert.notEqual(look(grid, view, x, z, many, 0), OBSTACLE); // last: sightings count in a row
   assert.equal(grid.settledCount, 1);
 
@@ -586,11 +627,11 @@ test('shift: a cell that stays in the window keeps its state and what was counte
 });
 
 test('shift: ground that comes in is unknown and open; a settled cell that leaves is no longer counted', () => {
-  const grid = windowGrid();
+  const grid = windowGrid(SETTLE);
   const many = SCAN.minPoints * 3;
   const far = [-2 * TILE_M + 1.05, 0.05]; // in the column of tiles that leaves
   const view = headAt(far[0], far[1] + 1.5);
-  for (let i = 0; i < SCAN.setScans + SCAN.settleScans; i++) look(grid, view, far[0], far[1], many, 0);
+  for (let i = 0; i < SCAN.setScans + SETTLE.settleScans; i++) look(grid, view, far[0], far[1], many, 0);
   assert.equal(grid.settledCount, 1);
   grid.shift(T, 0, [-TILE_M, -2 * TILE_M]);
   assert.equal(grid.settledCount, 0);
@@ -658,8 +699,8 @@ function watch(grid, view, x, z, obstaclePoints, floorPoints, until, clock, limi
   return null;
 }
 
-test('a chair put down on settled floor is marked within a second and a half, and cleared within two when it is taken away', () => {
-  const grid = newGrid();
+test('with settling on: a chair put down on settled floor is marked within a second and a half, and cleared within two when it is taken away', () => {
+  const grid = settlingGrid();
   const many = SCAN.minPoints * 3;
   const view = headAt(0, 0);
   const clock = { ms: 0 };
@@ -678,16 +719,16 @@ test('a chair put down on settled floor is marked within a second and a half, an
   assert.ok(cleared !== null && cleared <= 2, `cleared after ${cleared} s`); // it was up to 2.45 s
 });
 
-test('a chair on settled floor is marked as quickly when something else in view never settles (a real depth image)', () => {
+test('with settling on: a chair on settled floor is marked as quickly when something else in view never settles (a real depth image)', () => {
   // On the headset a few cells always flicker, so "nothing in view is open" hardly ever holds.
   // Settled ground must be looked at again all the same, on its own clock.
-  const grid = newGrid();
+  const grid = settlingGrid();
   const many = SCAN.minPoints * 3;
   const view = headAt(0, 0);
   const [x, z] = [0.05, -1.55];
   const flicker = [0.65, -2.05]; // a cell that says "thing" and "floor" in turn: it never settles
   let ms = 0;
-  let k = 0;
+  let k = 0; // reads made: the flickering cell is a thing in one whole read and floor in the next
   // The app's loop (scan/index.js readLive). Returns the seconds until `until` holds, or null.
   const watchNoisy = (obstaclePoints, floorPoints, until, limit) => {
     for (let n = 1; n <= limit; n++) {
@@ -695,7 +736,8 @@ test('a chair on settled floor is marked as quickly when something else in view 
       view.now = ms;
       grid.reopen(view);
       if (!grid.refresh(view, ms, SCAN.refreshS * 1000) && !grid.unsettledInView(view)) continue;
-      for (let p = 0; p < many; p++) grid.add(flicker[0], k++ % 2 ? 0.5 : 0, flicker[1]);
+      k++;
+      for (let p = 0; p < many; p++) grid.add(flicker[0], k % 2 ? 0.5 : 0, flicker[1]);
       for (let p = 0; p < obstaclePoints; p++) grid.add(x, 0.5, z);
       for (let p = 0; p < floorPoints; p++) grid.add(x, 0, z);
       grid.commit(view);
@@ -703,9 +745,16 @@ test('a chair on settled floor is marked as quickly when something else in view 
     }
     return null;
   };
-  watchNoisy(0, many, () => false, 60);
+  let skipped = 0;
+  for (let round = 0; round < 60; round++) {
+    const before = k;
+    watchNoisy(0, many, () => false, 1);
+    if (k === before) skipped++;
+  }
   assert.equal(grid.cells[cellOf(x, z)], PASSABLE);
-  assert.equal(grid.unsettledInView(view), true, 'something in view is still open');
+  assert.equal(grid.cells[cellOf(flicker[0], flicker[1])], PASSABLE, 'the flickering cell never gets its two sightings in a row');
+  assert.equal(grid.unsettledInView(view), true, 'it is still open');
+  assert.equal(skipped, 0, 'so no read was skipped in 60');
   const marked = watchNoisy(many, 0, (cell) => cell === OBSTACLE, 60);
   assert.ok(marked !== null && marked <= 1.5, `marked after ${marked} s`);
   watchNoisy(many, 0, () => false, 40);
@@ -714,7 +763,7 @@ test('a chair on settled floor is marked as quickly when something else in view 
 });
 
 test('ground that stays as it is costs only a few reads each time it is looked at again', () => {
-  const grid = newGrid();
+  const grid = settlingGrid();
   const many = SCAN.minPoints * 3;
   const view = headAt(0, 0);
   const [x, z] = [0.05, -1.55];
@@ -733,7 +782,7 @@ test('ground that stays as it is costs only a few reads each time it is looked a
 });
 
 test('with refreshS 0 settled ground is not read again while the wearer stays (the old behaviour)', () => {
-  const grid = createGrid(COLS, COLS, SCAN.cellM, ORIGIN, SCAN);
+  const grid = settlingGrid();
   const view = headAt(0, 0);
   for (let k = 0; k < 40; k++) {
     grid.reopen(view);
@@ -742,4 +791,176 @@ test('with refreshS 0 settled ground is not read again while the wearer stays (t
   }
   assert.equal(grid.unsettledInView(view), false);
   assert.equal(grid.refresh(view, 1e9, Infinity), 0, 'nothing is old enough');
+});
+
+// ---- settling off, the default: every read counts for every cell in view ----
+
+test('a chair put down on floor that has been watched for a minute is marked after setScans reads and cleared after clearScans, while the head moves and a cell nearby never comes to rest', () => {
+  // With settling on, the tests above allow 1.5 s and 2 s for this: a settled cell is blind until
+  // it is looked at again. Off, known ground follows the room as fast as new ground does. The
+  // app's read loop, as in index.js readLive: reopen, refresh, skip when nothing is open, read, commit.
+  const many = SCAN.minPoints * 3;
+  const [x, z] = [0.05, -1.55]; // where the chair will stand
+  const [rx, rz] = [0.85, -1.95]; // the edge of something: a thing in one read, floor in the next
+  const grid = newGrid();
+  const clock = { ms: 0, k: 0 };
+  // `seconds` of reads; the time until `until(cell)` holds for the chair's cell, or null.
+  function play(seconds, chair, until) {
+    for (let k = 1; k <= Math.round((seconds * 1000) / SCAN.depthMs); k++) {
+      clock.ms += SCAN.depthMs;
+      clock.k++;
+      // The head sways and nods a little, as a head does.
+      const view = { ...headAt(0, 0, Math.sin(clock.k / 3) * 0.05, -1, -0.5 + Math.sin(clock.k / 5) * 0.07), now: clock.ms };
+      grid.reopen(view);
+      if (!(SCAN.refreshS > 0 && grid.refresh(view, clock.ms, SCAN.refreshS * 1000)) && !grid.unsettledInView(view)) continue; // a skipped read
+      for (let p = 0; p < many; p++) grid.add(x, chair ? 0.5 : 0, z);
+      for (let p = 0; p < many; p++) grid.add(rx, clock.k % 2 ? 0.5 : 0, rz);
+      grid.commit(view);
+      if (until?.(grid.cells[cellOf(x, z)])) return (k * SCAN.depthMs) / 1000;
+    }
+    return null;
+  }
+  play(60, false);
+  assert.equal(grid.cells[cellOf(x, z)], PASSABLE);
+  assert.equal(grid.settledCount, 0, 'nothing settled in a minute');
+  const marked = play(10, true, (cell) => cell === OBSTACLE);
+  assert.equal(marked, (SCAN.setScans * SCAN.depthMs) / 1000, 'marked by the first setScans reads that see it');
+  assert.ok(marked <= 0.2, `${marked} s`);
+  play(60, true);
+  const cleared = play(10, false, (cell) => cell === PASSABLE);
+  assert.equal(cleared, (SCAN.clearScans * SCAN.depthMs) / 1000, 'cleared by the first clearScans reads of bare floor');
+  assert.ok(cleared <= 0.3, `${cleared} s`);
+});
+
+test('the grid goes out in the frame after the read that changed it: emitMs stays more than a frame below depthMs', () => {
+  // index.js sends when emitMs has passed since the last send, never in the frame of a read. With
+  // emitMs above depthMs (250 against 200) a change waited up to 233 ms for its turn while the
+  // map kept changing, as it does when the wearer walks: 144 ms on average.
+  assert.ok(SCAN.emitMs <= SCAN.depthMs - 14, `emitMs ${SCAN.emitMs}, depthMs ${SCAN.depthMs}`); // 14 ms: a frame at 72 Hz
+});
+
+test('the reads are spaced by what a read takes: ten a second while it is quick, fewer by themselves when it is slow', () => {
+  assert.equal(SCAN.depthMs, 100);
+  const every = (costMs) => readEveryMs(SCAN.depthMs, costMs, SCAN.depthBusy);
+  assert.equal(every(0), 100, 'nothing measured yet');
+  assert.equal(every(5), 100, 'a read of 5 ms: every depthMs');
+  assert.equal(every(SCAN.depthMs * SCAN.depthBusy), 100, 'the longest read that still leaves it at that');
+  assert.ok(Math.abs(every(30) - 200) < 1e-9, 'a read of 30 ms: five a second');
+  assert.ok(Math.abs(every(60) - 400) < 1e-9);
+  // The share of the time spent reading never passes depthBusy, however slow a read is.
+  for (const cost of [1, 10, 20, 50, 200]) assert.ok(cost / every(cost) <= SCAN.depthBusy + 1e-9, `${cost} ms`);
+  assert.equal(readEveryMs(100, 500, 1), 500, 'with ?depthBusy=1 a read still does not start before the one before is over');
+});
+
+
+// ---- reach: what a cell needs follows how thin the image lies on the floor, and how far away it is ----
+
+test('floorReachM: how far an image can clear what it marks, by its samples and the eye height', () => {
+  const P = questEye(3).projectionMatrix.elements;
+  const reach = (samples, eyeM) => floorReachM(P, samples, eyeM, SCAN.cellM, SCAN.farPoints);
+  assert.ok(reach(320, 1.6) > 5.3 && reach(320, 1.6) < 5.45, `${reach(320, 1.6)}`);
+  // The defaults fit together: at the eye height of our wearer (1.45 m on 2026-11-15) the image reaches depthRangeM.
+  assert.ok(reach(SCAN.depthSamples, 1.45) >= SCAN.depthRangeM);
+  // Fewer samples, or a lower eye, reach less far: the read then ends there by itself.
+  assert.ok(reach(288, 1.45) > 4.75 && reach(288, 1.45) < 4.9);
+  assert.ok(reach(192, 1.6) > 3.7 && reach(192, 1.6) < 3.9);
+  assert.ok(reach(320, 0.8) < 4.4, 'sitting down');
+  assert.ok(Math.abs(reach(320, 1.6) / reach(160, 1.6) - 2 ** (2 / 3)) < 1e-6, 'four times the samples: 1.59 times the reach');
+  // What follows the range in SCAN.
+  assert.ok(SCAN.leaveM >= SCAN.depthRangeM + 1 && SCAN.glowFullM < SCAN.depthRangeM && SCAN.farM < SCAN.depthRangeM);
+});
+
+test('where the image is thin, farPoints floor samples say "floor"; near the wearer it takes minPoints', () => {
+  const weight = Math.ceil(SCAN.minPoints / SCAN.farPoints);
+  const grid = newGrid();
+  const [x, z] = [0.05, -4.55];
+  grid.add(x, 0, z, weight); // one far sample: not enough
+  grid.commit();
+  assert.equal(grid.cells[cellOf(x, z)], UNKNOWN);
+  for (let k = 0; k < SCAN.farPoints; k++) grid.add(x, 0, z, weight);
+  grid.commit();
+  assert.equal(grid.cells[cellOf(x, z)], PASSABLE);
+  for (let k = 0; k < SCAN.farPoints; k++) grid.add(0.05, 0, -1.55); // the same number of samples near the wearer
+  grid.commit();
+  assert.equal(grid.cells[cellOf(0.05, -1.55)], UNKNOWN);
+  // A thing point still outweighs them: floor with a little of something else is unclear, far away too.
+  for (let i = 0; i < SCAN.farSetScans; i++) {
+    for (let k = 0; k < SCAN.minPoints; k++) grid.add(x, 0.5, z);
+    grid.commit();
+  }
+  assert.equal(grid.cells[cellOf(x, z)], OBSTACLE);
+  for (let i = 0; i < SCAN.clearScans + 2; i++) {
+    grid.add(x, 0.5, z);
+    for (let k = 0; k < 4; k++) grid.add(x, 0, z, weight);
+    grid.commit();
+  }
+  assert.equal(grid.cells[cellOf(x, z)], OBSTACLE);
+});
+
+test('one read of bare floor knows four fifths or more of the last metre of the range', () => {
+  for (const ahead of [1.5, 3, SCAN.depthRangeM - 0.4]) {
+    const camera = questEye(ahead, 1.45);
+    const grid = newGrid();
+    addDepthView(grid, depthSensor(camera, null), camera.projectionMatrix.elements, camera.matrixWorld.elements, SCAN);
+    grid.commit();
+    let cells = 0;
+    let known = 0;
+    for (let i = 0; i < grid.cells.length; i++) {
+      const x = ORIGIN[0] + ((i % COLS) + 0.5) * SCAN.cellM;
+      const z = ORIGIN[1] + (Math.floor(i / COLS) + 0.5) * SCAN.cellM;
+      const d = Math.hypot(x, z);
+      if (d < SCAN.depthRangeM - 1 || d > SCAN.depthRangeM - 0.1 || Math.abs(Math.atan2(x, -z)) > 0.5) continue;
+      cells++;
+      if (grid.cells[i] === PASSABLE) known++;
+    }
+    assert.ok(known / cells >= 0.8, `looking ${ahead} m ahead: ${known} of ${cells}`);
+  }
+});
+
+test('beyond farM a thing has to be seen farSetScans times in a row; nearer, setScans as before', () => {
+  assert.ok(SCAN.farSetScans > SCAN.setScans);
+  const many = SCAN.minPoints * 3;
+  const view = headAt(0, 0);
+  const sight = (grid, at, from = view) => {
+    for (let k = 0; k < many; k++) grid.add(at[0], 0.5, at[1]);
+    grid.commit(from);
+    return grid.cells[cellOf(at[0], at[1])];
+  };
+  const far = [0.05, -(SCAN.farM + 0.45)];
+  const near = [0.05, -(SCAN.farM - 0.45)];
+  const grid = newGrid();
+  for (let i = 1; i < SCAN.setScans; i++) assert.notEqual(sight(grid, near), OBSTACLE);
+  assert.equal(sight(grid, near), OBSTACLE);
+  for (let i = 1; i < SCAN.farSetScans; i++) assert.notEqual(sight(grid, far), OBSTACLE, `far: not after ${i} sighting(s)`);
+  assert.equal(sight(grid, far), OBSTACLE);
+  // Sightings a read apart do not add up, far away either.
+  const other = [1.05, -(SCAN.farM + 0.45)];
+  for (let round = 0; round < 4; round++) {
+    for (let i = 1; i < SCAN.farSetScans; i++) assert.notEqual(sight(grid, other), OBSTACLE);
+    grid.commit(view); // a read that does not see it
+  }
+  // A far cell seen setScans times counts as soon as the wearer is within farM of it.
+  for (let i = 0; i < SCAN.setScans - 1; i++) sight(grid, other);
+  assert.notEqual(grid.cells[cellOf(other[0], other[1])], OBSTACLE);
+  assert.equal(sight(grid, other, headAt(0, -1)), OBSTACLE);
+  // An obstacle marked nearer stays one when it is seen again from beyond farM.
+  for (let i = 0; i < SCAN.clearScans; i++) assert.equal(sight(grid, near, headAt(0, 2)), OBSTACLE);
+});
+
+test('at an eye height of 1.45 m, with a head that is never quite still: a chair 0.4 m inside the range is marked, and cleared within 2 s', () => {
+  const far = SCAN.depthRangeM - 0.4;
+  const chair = new THREE.Box3(new THREE.Vector3(-0.25, 0, -far - 0.25), new THREE.Vector3(0.25, 0.9, -far + 0.25));
+  for (const ahead of [1.5, 3, far]) {
+    const grid = newGrid();
+    const look = (thing, k) => {
+      const camera = questEye(ahead + 0.02 * Math.sin(k * 1.7), 1.45); // nodding by a fraction of a degree
+      addDepthView(grid, depthSensor(camera, thing), camera.projectionMatrix.elements, camera.matrixWorld.elements, SCAN);
+      grid.commit(headAt(0, 0));
+    };
+    for (let k = 0; k < SCAN.farSetScans; k++) look(chair, k);
+    assert.ok(grid.cells.includes(OBSTACLE), `looking ${ahead} m ahead: marked`);
+    let reads = 0;
+    while (grid.cells.includes(OBSTACLE) && reads < 40) look(null, ++reads);
+    assert.ok(reads * SCAN.depthMs <= 2000, `looking ${ahead} m ahead: cleared after ${reads} reads`);
+  }
 });

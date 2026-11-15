@@ -4,12 +4,12 @@
 //
 // This layer only ever adds: every surface between floorBandM and headM above the floor blocks
 // the cell under it for good, and a surface near the floor makes the cell passable until
-// something is found standing on it. Taking things away again is the live layer's job (grid.js).
-// One exception: where the wearer has stood (stoodAt) there is nothing in the way, whatever the
-// room model says, and the cell is not blocked again.
+// something is found standing on it. Taking things away again is the live layer's job (grid.js),
+// and that only reaches what live depth put there: nothing removes what this layer has blocked,
+// not even the wearer standing on it (they are warned instead: field/zone.js).
 //
 // The cells are a window on the floor that index.js moves with the wearer (tiles.js): it
-// shifts `cells` and `walked` itself and then calls moved() with the new origin.
+// shifts `cells` itself and then calls moved() with the new origin.
 
 import { PASSABLE, OBSTACLE, UNKNOWN } from './grid.js';
 
@@ -17,7 +17,6 @@ import { PASSABLE, OBSTACLE, UNKNOWN } from './grid.js';
 export function createRoom(cols, rows, originXZ, cfg) {
   let origin = [originXZ[0], originXZ[1]]; // room coordinates of cell [0, 0]; moved() changes it
   const cells = new Uint8Array(cols * rows).fill(UNKNOWN);
-  const walked = new Uint8Array(cols * rows).fill(UNKNOWN); // PASSABLE where the wearer has stood
   const seen = new Map(); // XRMesh / XRPlane -> { changed: its lastChangedTime when last looked at, at: when that was, print: its fingerprint }
   const jobs = []; // triangles waiting to be rasterised: { m: Float32Array(16), v, idx, at }
   const counts = { meshes: 0, planes: 0 };
@@ -29,7 +28,6 @@ export function createRoom(cols, rows, originXZ, cfg) {
     if (c < 0 || r < 0 || c >= cols || r >= rows) return;
     const i = r * cols + c;
     if (y > cfg.floorBandM && y < cfg.headM) {
-      if (walked[i] === PASSABLE) return; // the wearer has stood here: it is not in the way
       if (cells[i] !== OBSTACLE) {
         cells[i] = OBSTACLE;
         marked = true;
@@ -104,43 +102,15 @@ export function createRoom(cols, rows, originXZ, cfg) {
 
   return {
     cells,
-    /** PASSABLE where the wearer has stood, UNKNOWN elsewhere. Shifted with `cells` when the window moves. */
-    walked,
 
     /**
-     * The window was moved (index.js has shifted `cells` and `walked`): cell [0, 0] is now at
+     * The window was moved (index.js has shifted `cells`): cell [0, 0] is now at
      * `nextOriginXZ`. Everything is rasterised again, because what lies in the part that came
      * into the window was dropped when it was outside.
      */
     moved(nextOriginXZ) {
       origin = [nextOriginXZ[0], nextOriginXZ[1]];
       seen.clear();
-    },
-
-    /**
-     * The wearer stands at (x, z): the cells within `radiusM` are clear floor and stay so.
-     * True when a cell changed.
-     */
-    stoodAt(x, z, radiusM) {
-      const k = Math.ceil(radiusM / cfg.cellM);
-      const c0 = Math.floor((x - origin[0]) / cfg.cellM);
-      const r0 = Math.floor((z - origin[1]) / cfg.cellM);
-      let changed = false;
-      for (let r = r0 - k; r <= r0 + k; r++) {
-        for (let c = c0 - k; c <= c0 + k; c++) {
-          if (c < 0 || r < 0 || c >= cols || r >= rows) continue;
-          const dx = origin[0] + (c + 0.5) * cfg.cellM - x;
-          const dz = origin[1] + (r + 0.5) * cfg.cellM - z;
-          if (dx * dx + dz * dz > radiusM * radiusM) continue;
-          const i = r * cols + c;
-          walked[i] = PASSABLE;
-          if (cells[i] !== PASSABLE) {
-            cells[i] = PASSABLE;
-            changed = true;
-          }
-        }
-      }
-      return changed;
     },
 
     /** How many meshes and planes the headset reported in the last frame given to collect(). */
