@@ -13,8 +13,11 @@ import argparse
 import asyncio
 import json
 import logging
+import re
 import ssl
 import time
+import wave
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from aiohttp import WSMsgType, web
@@ -31,9 +34,12 @@ log = logging.getLogger("hub")
 HERE = Path(__file__).resolve().parent
 JETSON_DIR = HERE.parent
 REPO_DIR = JETSON_DIR.parent
+LOG_DIR = JETSON_DIR / "logs"
 TTS_CHUNK = 4096  # bytes per binary frame
 MUTE_TAIL_S = 0.6  # keep microphones muted this long after the hub's own speech ends
+DICTATE_S = 12.0   # how long a headset's request for dictation waits for words
 ALERT_SPEECH = [SUIT_TEMP_MESSAGES["critical"]]  # spoken by the hub; synthesized at startup
+GONE = (ConnectionResetError, RuntimeError)   # what sending to a client that has left raises
 
 
 def envelope(type_: str, payload: dict) -> str:
@@ -41,7 +47,26 @@ def envelope(type_: str, payload: dict) -> str:
                       ensure_ascii=False)
 
 
-DICTATE_S = 12.0   # how long a headset's request for dictation waits for words
+def append_line(path: Path, line: str):
+    """One line onto a log file. A full disk or a missing folder never breaks the hub."""
+    try:
+        path.parent.mkdir(exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass
+
+
+@dataclass
+class Client:
+    """One connection (a headset, or tools/fake_quest.py) and what the hub keeps for it."""
+    ws: web.WebSocketResponse
+    peer: str
+    mic_buf: bytearray = field(default_factory=bytearray)   # push-to-talk audio between mic.begin and mic.end
+    mic_rate: int = 16000
+    mic_on: bool = False
+    segmenter: object | None = None   # set while the client streams its microphone continuously
+    dictate: dict | None = None       # {"id", "until"} while this headset wants its next words as text
 
 
 class Hub:
@@ -55,7 +80,7 @@ class Hub:
         self.tts.warm(ALERT_SPEECH)
         self.say_epoch = 0          # bumped by every urgent utterance
         self.mute_until = 0.0       # monotonic time until which microphones are ignored
-        self.heard_log = (JETSON_DIR / "logs" / "heard.log")
+        self.heard_log = LOG_DIR / "heard.log"
         self.menu_version = -1      # command menu version last sent to the headsets
         self.state = {"mode": "normal", "navStatus": None, "targetId": None}
         self.active_alerts: dict[str, dict] = {}
@@ -65,22 +90,41 @@ class Hub:
         self.mirror = Mirror()
         self.mirror.extra = lambda: {"rescue": self.rescue}
         self.rescue: dict | None = None   # the rescue signal that is up, if any
+        # What a client may send (docs/INTERFACES.md section 4): message type -> handler(client, payload).
+        self.handlers = {
+            "hello": self.on_hello,
+            "mic.begin": self.on_mic_begin,
+            "mic.end": self.on_mic_end,
+            "voice.dictate": self.on_voice_dictate,
+            "voice.text": self.on_voice_text,
+            "voice.status": self.on_voice_status,
+            "voice.say": self.on_voice_say,
+            "client.log": self.on_client_log,
+            "state": self.on_state,
+            "map.store": self.on_map_store,
+            "map.request": self.on_map_request,
+            "waypoints.store": self.on_waypoints_store,
+            "waypoints.request": self.on_waypoints_request,
+            "rescue.signal": self.handle_rescue,
+        }
 
     # ---------- broadcast ----------
-    async def broadcast(self, type_: str, payload: dict):
-        msg = envelope(type_, payload)
+    async def _to_all(self, send, exclude=None):
+        """Call `send(ws)` for every client but `exclude`; one that has left is forgotten."""
         for ws in list(self.clients):
+            if ws is exclude:
+                continue
             try:
-                await ws.send_str(msg)
-            except (ConnectionResetError, RuntimeError):
+                await send(ws)
+            except GONE:
                 self.clients.discard(ws)
 
+    async def broadcast(self, type_: str, payload: dict, exclude=None):
+        msg = envelope(type_, payload)
+        await self._to_all(lambda ws: ws.send_str(msg), exclude)
+
     async def broadcast_bytes(self, data: bytes):
-        for ws in list(self.clients):
-            try:
-                await ws.send_bytes(data)
-            except (ConnectionResetError, RuntimeError):
-                self.clients.discard(ws)
+        await self._to_all(lambda ws: ws.send_bytes(data))
 
     # ---------- telemetry loop (1 Hz) ----------
     async def telemetry_loop(self):
@@ -155,24 +199,14 @@ class Hub:
 
     def _note_heard(self, text: str, cmd: dict | None):
         """Everything the recognizer heard, matched or not: the material for tuning commands.json."""
-        try:
-            self.heard_log.parent.mkdir(exist_ok=True)
-            with self.heard_log.open("a", encoding="utf-8") as f:
-                f.write(f"{time.strftime('%H:%M:%S')}\t{cmd['intent'] if cmd else '-'}\t{text}\n")
-        except OSError:
-            pass
+        append_line(self.heard_log, f"{time.strftime('%H:%M:%S')}\t{cmd['intent'] if cmd else '-'}\t{text}")
 
     def _note_client(self, peer, kind: str, p: dict):
         """Headset diagnostics (errors, AR session events, a position heartbeat) in logs/headset.log."""
-        try:
-            path = JETSON_DIR / "logs" / "headset.log"
-            path.parent.mkdir(exist_ok=True)
-            with path.open("a", encoding="utf-8") as f:
-                f.write(f"{time.strftime('%H:%M:%S')}\t{peer}\t{kind}\t{json.dumps(p, ensure_ascii=False)}\n")
-        except OSError:
-            pass
+        append_line(LOG_DIR / "headset.log",
+                    f"{time.strftime('%H:%M:%S')}\t{peer}\t{kind}\t{json.dumps(p, ensure_ascii=False)}")
 
-    async def handle_utterance(self, samples, rate: int, ws=None, conn: dict | None = None):
+    async def handle_utterance(self, samples, rate: int, client: Client | None = None):
         """One utterance of a headset: a command, or, while that headset asked for dictation
         (voice.dictate: the name of a waypoint), the words themselves, sent back to it alone."""
         try:
@@ -181,16 +215,16 @@ class Hub:
             log.exception("STT failed")
             return
         await asyncio.to_thread(self._keep_audio, samples, rate, text)
-        wanted = conn.get("dictate") if conn else None
+        wanted = client.dictate if client else None
         if wanted and time.monotonic() < wanted["until"]:
             if not text.strip():
                 return                      # a noise, not words: keep listening
-            conn["dictate"] = None
+            client.dictate = None
             log.info("dictation %r", text)
             self._note_heard(text, {"intent": "(dictation)"})
             try:
-                await ws.send_str(envelope("voice.dictation", {"id": wanted["id"], "text": text.strip()}))
-            except (ConnectionResetError, RuntimeError):
+                await client.ws.send_str(envelope("voice.dictation", {"id": wanted["id"], "text": text.strip()}))
+            except GONE:
                 pass
             return
         if text:
@@ -203,9 +237,7 @@ class Hub:
         if keep <= 0:
             return
         try:
-            import re
-            import wave
-            import numpy as np
+            import numpy as np   # optional, like the speech models: the hub starts without it
             x = (np.frombuffer(samples, dtype="<i2").astype(np.float32) / 32768.0
                  if isinstance(samples, (bytes, bytearray)) else np.asarray(samples, dtype=np.float32))
             if not len(x):
@@ -213,7 +245,7 @@ class Hub:
             peak = float(np.abs(x).max())
             rms = float(np.sqrt(np.mean(x * x)))
             log.info("utterance %.1fs peak %.3f rms %.4f -> %r", len(x) / rate, peak, rms, text)
-            folder = JETSON_DIR / "logs" / "utterances"
+            folder = LOG_DIR / "utterances"
             folder.mkdir(parents=True, exist_ok=True)
             slug = re.sub(r"[^A-Za-z0-9]+", "-", text).strip("-")[:40] or "nothing"
             with wave.open(str(folder / f"{time.strftime('%Y%m%d-%H%M%S')}_{slug}.wav"), "wb") as w:
@@ -234,140 +266,151 @@ class Hub:
     async def ws_handler(self, request: web.Request):
         ws = web.WebSocketResponse(heartbeat=5.0, max_msg_size=8 * 1024 * 1024)
         await ws.prepare(request)
-        peer = request.remote
+        client = Client(ws, request.remote)
         self.clients.add(ws)
-        log.info("client connected %s (%d total)", peer, len(self.clients))
-        mic_buf = bytearray()
-        mic_rate = 16000
-        mic_on = False
-        segmenter = None            # set while the client streams its microphone continuously
-        conn = {"dictate": None}    # {"id", "until"} while this headset wants its next words as text
+        log.info("client connected %s (%d total)", client.peer, len(self.clients))
         try:
             # send current alert state so a reconnecting headset is in sync
             for a in self.active_alerts.values():
                 await ws.send_str(envelope("alert.raise", a))
             async for msg in ws:
                 if msg.type == WSMsgType.BINARY:
-                    if segmenter is not None:
-                        if time.monotonic() < self.mute_until:
-                            segmenter.reset()        # the hub is speaking: not a command
-                            continue
-                        for samples in segmenter.feed(msg.data, mic_rate):
-                            asyncio.create_task(self.handle_utterance(samples, segmenter.RATE, ws, conn))
-                    elif mic_on:
-                        mic_buf += msg.data
-                    continue
-                if msg.type != WSMsgType.TEXT:
-                    continue
-                try:
-                    m = json.loads(msg.data)
-                    type_, p = m["type"], m.get("payload") or {}
-                except (json.JSONDecodeError, KeyError, TypeError):
-                    log.warning("bad message from %s: %.80s", peer, msg.data)
-                    continue
-
-                if type_ == "hello":
-                    log.info("hello from %s: %s", peer, p)
-                    await ws.send_str(envelope("voice.commands", {"commands": intents.menu()[1]}))
-                elif type_ == "mic.begin":
-                    mic_rate = int(p.get("sampleRate", 16000))
-                    if p.get("stream"):
-                        # Continuous stream: the hub finds the utterances itself.
-                        segmenter = segmenter or make_segmenter()
-                        if segmenter is None:
-                            log.warning("streaming mic from %s but no VAD model "
-                                        "(tools/get_models.sh)", peer)
-                        else:
-                            segmenter.reset()
-                            log.info("mic stream from %s (%d Hz)", peer, mic_rate)
-                    else:
-                        segmenter = None
-                        mic_buf.clear()
-                        mic_on = True
-                elif type_ == "mic.end":
-                    if segmenter is not None:
-                        segmenter = None
-                        log.info("mic stream from %s ended", peer)
-                    elif mic_on:
-                        mic_on = False
-                        audio = bytes(mic_buf)
-                        mic_buf.clear()
-                        await self.handle_utterance(audio, mic_rate, ws, conn)
-                elif type_ == "voice.dictate":
-                    # The next thing said is not a command but a text (a waypoint's name).
-                    if p.get("on"):
-                        secs = p.get("seconds")
-                        secs = min(30.0, max(3.0, float(secs))) if isinstance(secs, (int, float)) else DICTATE_S
-                        conn["dictate"] = {"id": p.get("id"), "until": time.monotonic() + secs}
-                        log.info("dictation asked by %s for %.0f s", peer, secs)
-                    else:
-                        conn["dictate"] = None
-                elif type_ == "voice.text":
-                    # A command picked from the headset's menu: same path as a spoken one.
-                    asyncio.create_task(self.handle_text_command(str(p.get("text", ""))))
-                elif type_ == "client.log":
-                    kind = p.pop("kind", "?")
-                    (log.debug if kind == "beat" else log.warning if kind in
-                     ("error", "rejection", "console.error") else log.info)("headset %s [%s] %s", peer, kind, p)
-                    self._note_client(peer, kind, p)
-                elif type_ == "voice.status":
-                    log.info("voice status from %s: %s", peer, p)
-                elif type_ == "voice.say":
-                    asyncio.create_task(self.say(p.get("text", ""), p.get("priority", "normal")))
-                elif type_ == "state":
-                    self.state.update(p)
-                elif type_ == "map.store":
-                    # The tiles of the field map that changed on the headset: onto the disk (maps.py).
-                    try:
-                        path = await asyncio.to_thread(self.maps.save, p)
-                    except (ValueError, OSError) as err:
-                        log.warning("map from %s not stored: %s", peer, err)
-                    else:
-                        if self.maps.latest["updates"] == 1:
-                            log.info("storing the field map of run %s in %s", p.get("run"), path.name)
-                elif type_ == "rescue.signal":
-                    await self.handle_rescue(ws, peer, p)
-                elif type_ == "waypoints.store":
-                    # The places the wearer marked: kept beside the maps for the next session.
-                    try:
-                        kept = await asyncio.to_thread(self.waypoints.save, p)
-                    except (ValueError, OSError) as err:
-                        log.warning("waypoints from %s not stored: %s", peer, err)
-                    else:
-                        log.info("stored %d waypoints from %s", len(kept["items"]), peer)
-                elif type_ == "waypoints.request":
-                    # Always answered, also with an empty list: the headset sends what it has
-                    # marked while the link was down only after it has seen what is kept here.
-                    kept = await asyncio.to_thread(self.waypoints.stored)
-                    await ws.send_str(envelope("waypoints.stored", kept or {"items": [], "count": 0}))
-                elif type_ == "map.request":
-                    stored = self.maps.stored()   # the newest run, every tile of it
-                    if stored:
-                        await ws.send_str(envelope("map.stored", stored))
-                elif type_.startswith("dev.") and self.args.dev:
-                    await self.handle_dev(type_, p)
-                else:
-                    log.info("ignored %s from %s", type_, peer)
+                    self.on_audio(client, msg.data)
+                elif msg.type == WSMsgType.TEXT:
+                    await self.on_message(client, msg.data)
         finally:
             self.clients.discard(ws)
-            log.info("client gone %s (%d left)", peer, len(self.clients))
+            log.info("client gone %s (%d left)", client.peer, len(self.clients))
         return ws
 
-    async def handle_rescue(self, sender: web.WebSocketResponse, peer, p: dict):
-        """The emergency button of a headset (web/src/hud/suit.js).
+    def on_audio(self, client: Client, data: bytes):
+        """A binary frame is microphone audio: 16-bit mono PCM at the rate given in mic.begin."""
+        if client.segmenter is not None:
+            if time.monotonic() < self.mute_until:
+                client.segmenter.reset()        # the hub is speaking: not a command
+                return
+            for samples in client.segmenter.feed(data, client.mic_rate):
+                asyncio.create_task(self.handle_utterance(samples, client.segmenter.RATE, client))
+        elif client.mic_on:
+            client.mic_buf += data
+
+    async def on_message(self, client: Client, data: str):
+        """A text frame is one message: { type, ts, payload }. Its type picks the handler."""
+        try:
+            m = json.loads(data)
+            type_, p = m["type"], m.get("payload") or {}
+        except (json.JSONDecodeError, KeyError, TypeError):
+            log.warning("bad message from %s: %.80s", client.peer, data)
+            return
+        handler = self.handlers.get(type_)
+        if handler:
+            await handler(client, p)
+        elif type_.startswith("dev.") and self.args.dev:
+            await self.handle_dev(type_, p)
+        else:
+            log.info("ignored %s from %s", type_, client.peer)
+
+    # ---------- one handler per message type: (client, payload) ----------
+    async def on_hello(self, client: Client, p: dict):
+        log.info("hello from %s: %s", client.peer, p)
+        await client.ws.send_str(envelope("voice.commands", {"commands": intents.menu()[1]}))
+
+    async def on_mic_begin(self, client: Client, p: dict):
+        client.mic_rate = int(p.get("sampleRate", 16000))
+        if p.get("stream"):
+            # Continuous stream: the hub finds the utterances itself.
+            client.segmenter = client.segmenter or make_segmenter()
+            if client.segmenter is None:
+                log.warning("streaming mic from %s but no VAD model "
+                            "(tools/get_models.sh)", client.peer)
+            else:
+                client.segmenter.reset()
+                log.info("mic stream from %s (%d Hz)", client.peer, client.mic_rate)
+        else:
+            client.segmenter = None
+            client.mic_buf.clear()
+            client.mic_on = True
+
+    async def on_mic_end(self, client: Client, p: dict):
+        if client.segmenter is not None:
+            client.segmenter = None
+            log.info("mic stream from %s ended", client.peer)
+        elif client.mic_on:
+            client.mic_on = False
+            audio = bytes(client.mic_buf)
+            client.mic_buf.clear()
+            await self.handle_utterance(audio, client.mic_rate, client)
+
+    async def on_voice_dictate(self, client: Client, p: dict):
+        """The next thing said is not a command but a text (a waypoint's name)."""
+        if p.get("on"):
+            secs = p.get("seconds")
+            secs = min(30.0, max(3.0, float(secs))) if isinstance(secs, (int, float)) else DICTATE_S
+            client.dictate = {"id": p.get("id"), "until": time.monotonic() + secs}
+            log.info("dictation asked by %s for %.0f s", client.peer, secs)
+        else:
+            client.dictate = None
+
+    async def on_voice_text(self, client: Client, p: dict):
+        """A command picked from the headset's menu: same path as a spoken one."""
+        asyncio.create_task(self.handle_text_command(str(p.get("text", ""))))
+
+    async def on_voice_status(self, client: Client, p: dict):
+        log.info("voice status from %s: %s", client.peer, p)
+
+    async def on_voice_say(self, client: Client, p: dict):
+        asyncio.create_task(self.say(p.get("text", ""), p.get("priority", "normal")))
+
+    async def on_client_log(self, client: Client, p: dict):
+        kind = p.pop("kind", "?")
+        (log.debug if kind == "beat" else log.warning if kind in
+         ("error", "rejection", "console.error") else log.info)("headset %s [%s] %s", client.peer, kind, p)
+        self._note_client(client.peer, kind, p)
+
+    async def on_state(self, client: Client, p: dict):
+        self.state.update(p)
+
+    async def on_map_store(self, client: Client, p: dict):
+        """The tiles of the field map that changed on the headset: onto the disk (maps.py)."""
+        try:
+            path = await asyncio.to_thread(self.maps.save, p)
+        except (ValueError, OSError) as err:
+            log.warning("map from %s not stored: %s", client.peer, err)
+        else:
+            if self.maps.latest["updates"] == 1:
+                log.info("storing the field map of run %s in %s", p.get("run"), path.name)
+
+    async def on_map_request(self, client: Client, p: dict):
+        stored = self.maps.stored()   # the newest run, every tile of it
+        if stored:
+            await client.ws.send_str(envelope("map.stored", stored))
+
+    async def on_waypoints_store(self, client: Client, p: dict):
+        """The places the wearer marked: kept beside the maps for the next session."""
+        try:
+            kept = await asyncio.to_thread(self.waypoints.save, p)
+        except (ValueError, OSError) as err:
+            log.warning("waypoints from %s not stored: %s", client.peer, err)
+        else:
+            log.info("stored %d waypoints from %s", len(kept["items"]), client.peer)
+
+    async def on_waypoints_request(self, client: Client, p: dict):
+        # Always answered, also with an empty list: the headset sends what it has
+        # marked while the link was down only after it has seen what is kept here.
+        kept = await asyncio.to_thread(self.waypoints.stored)
+        await client.ws.send_str(envelope("waypoints.stored", kept or {"items": [], "count": 0}))
+
+    async def handle_rescue(self, client: Client, p: dict):
+        """The emergency button of a headset (web/src/hud/rescue.js).
 
         The crew is virtual: the other headsets on the hub get an alert, the monitor page shows
         it, and a few seconds later the hub acknowledges in the crew's name and says that this
         acknowledgement is simulated.
         """
+        sender, peer = client.ws, client.peer
+
         async def others(type_: str, payload: dict):
-            msg = envelope(type_, payload)
-            for ws in list(self.clients):
-                if ws is not sender:
-                    try:
-                        await ws.send_str(msg)
-                    except (ConnectionResetError, RuntimeError):
-                        self.clients.discard(ws)
+            await self.broadcast(type_, payload, exclude=sender)
 
         if not p.get("active"):
             if self.rescue:
@@ -394,7 +437,7 @@ class Hub:
                 signal.update(acknowledged=True, by="Base crew (simulated)")
                 try:
                     await sender.send_str(envelope("rescue.state", signal))
-                except (ConnectionResetError, RuntimeError):
+                except GONE:
                     pass
                 await self.say("Base has your signal.")
         asyncio.create_task(acknowledge())
