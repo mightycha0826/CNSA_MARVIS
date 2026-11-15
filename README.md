@@ -5,7 +5,7 @@ An entry for the 2026 NASA Space Apps Challenge, *Interplanetary Survival Guide:
 
 Project Marvis is a helmet heads-up display for an astronaut walking on Mars. It layers data from four NASA Mars missions into one map of a single walkable site, plans a route across it that a person in a spacesuit could walk, fills in the nearby obstacles that orbital data cannot show with the helmet's own depth sensor, and keeps the suit's readings and alerts in view. It is operated by hand gestures and voice, because gloved hands cannot press buttons. A Meta Quest 3 stands in for the helmet, an NVIDIA Jetson for the suit's computer and an Arduino temperature sensor for a sensor on the suit.
 
-**Demo video:** [docs/demo/marswalk-visor-demo.mp4](docs/demo/marswalk-visor-demo.mp4), a screen recording of the app in use (1 min 17 s).
+**Demo video:** [docs/demo/marswalk-visor-demo.mp4](docs/demo/marswalk-visor-demo.mp4), a recording of the headset's view with the app in use (29 s).
 
 ![The four map layers of the site: optical, terrain shading, slope and night thermal, with Curiosity's path](docs/figures/layers.png)
 

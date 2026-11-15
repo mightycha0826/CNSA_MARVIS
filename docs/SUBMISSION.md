@@ -19,7 +19,7 @@ Source: https://www.spaceappschallenge.org/resources/project-submission-guide/
 
 The text below the line has no `[TODO]` marks left. It describes the project **as on `main` at 16:07 on 2026-11-14**. Most of what was added after that is not in it: waypoints and picking places on the map, the vitals over the right palm, the rescue signal, the monitor page and its recording, the field map kept on the Jetson. Those are described in the [README](../README.md) and in [USAGE.md](USAGE.md). Check these before pressing Submit:
 
-- [ ] **Demo link.** A screen recording of the app is in the repository, [demo/marswalk-visor-demo.mp4](demo/marswalk-visor-demo.mp4). It is 1 min 17 s long, so as it is it does not fit the rule above: the submitted demo needs a cut of 30 s or less (or 7 slides or fewer). Replace `DEMO LINK HERE` in "Link to Project Demo" with the public link of that cut.
+- [ ] **Demo link.** The demo video is in the repository, [demo/marswalk-visor-demo.mp4](demo/marswalk-visor-demo.mp4). It is 29 s long, which fits the rule above (30 s or less). Replace `DEMO LINK HERE` in "Link to Project Demo" with its public link.
 - [ ] **Headset results.** "What has been tested" still says only that the headset-only parts do not run in a desktop browser. The app has since been run on the Quest 3 ([README](../README.md#verification-level)); replace that bullet with what actually happened (what worked, what did not).
 - [ ] **If a feature changes before the deadline, change its sentence.** The table below says what the text assumes.
 - [ ] **Use of Super Intelligence.** Filled in from the repository (commit records and file contents). Each member should confirm it and add any tool that is not listed.
