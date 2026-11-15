@@ -134,7 +134,9 @@ async function frame({ width, height, pixels, info, costMs = 0, wantJpeg = false
   const t0 = now();
   if (!canvas || canvas.width !== width || canvas.height !== height) {
     canvas = new OffscreenCanvas(width, height);
-    g = canvas.getContext('2d');
+    // Kept in memory (willReadFrequently): otherwise the browser holds the canvas on the GPU, and
+    // every picture would go up to it and be read back for the JPEG.
+    g = canvas.getContext('2d', { willReadFrequently: true });
     image = g.createImageData(width, height);
   }
   // Four bytes at a time (red is the lowest byte on every machine this runs on, alpha the

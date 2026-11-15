@@ -77,8 +77,9 @@ export const MIRROR = {
   camera: !['0', '1', 'nocam'].includes(params.get('mirror')), // the headset's camera picture behind the mirror; ?mirror=nocam leaves it out
   cameraName: params.get('mirrorCam'), // ?mirrorCam=camera 1 picks a camera by (part of) its name, when the default choice is the wrong one
   // 4:3 like the camera picture. In the whole view the wearer's 99 degrees from top to bottom
-  // share these 960 lines: about as many to a degree as the 640 x 480 picture had for the
-  // camera's 58, so nothing is coarser than it was.
+  // share these 960 lines on a flat picture: about 6.7 lines to a degree in the middle, against
+  // 7.6 in the 640 x 480 picture of the camera's 58 degrees it replaces, so the whole view is
+  // about a tenth coarser there; the camera view is twice as fine as it was.
   width: WIDTH,
   height: HEIGHT,
   fps: Math.min(30, Math.max(1, numberOr('mirrorFps', 15))), // pictures a second, at most
