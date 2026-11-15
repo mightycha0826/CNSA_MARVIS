@@ -11,7 +11,8 @@ sound track beside them: the headset's microphone and the hub's own speech, mixe
 
 After the stop GStreamer makes NAME.mp4 from the MKV (H.264 + AAC, 30 pictures a second: the
 file to hand on), at low priority and one recording at a time. The MKV stays as the master.
-On a machine without GStreamer there is only the MKV ("master only"); VLC and mpv play it.
+On a machine without GStreamer there is only the MKV ("master only"): a file for a player that
+knows Matroska, as VLC and mpv do.
 
 No aiohttp in here, and numpy is optional: without it a recording has pictures only.
 """
@@ -86,11 +87,16 @@ def jpeg_size(data: bytes) -> tuple[int, int] | None:
 # ---------- the file ----------
 # The ids of the Matroska elements used here (matroska.org, "Element Specification").
 EBML, SEGMENT, VOID = 0x1A45DFA3, 0x18538067, 0xEC
-INFO, TIMESTAMP_SCALE, MUXING_APP, WRITING_APP, DATE_UTC, DURATION = 0x1549A966, 0x2AD7B1, 0x4D80, 0x5741, 0x4461, 0x4489
-TRACKS, TRACK_ENTRY, TRACK_NUMBER, TRACK_UID, TRACK_TYPE, FLAG_LACING, CODEC_ID = 0x1654AE6B, 0xAE, 0xD7, 0x73C5, 0x83, 0x9C, 0x86
+INFO, TIMESTAMP_SCALE, MUXING_APP, WRITING_APP, DATE_UTC, DURATION = (
+    0x1549A966, 0x2AD7B1, 0x4D80, 0x5741, 0x4461, 0x4489)
+TRACKS, TRACK_ENTRY, TRACK_NUMBER, TRACK_UID, TRACK_TYPE, FLAG_LACING, CODEC_ID = (
+    0x1654AE6B, 0xAE, 0xD7, 0x73C5, 0x83, 0x9C, 0x86)
 VIDEO, PIXEL_WIDTH, PIXEL_HEIGHT = 0xE0, 0xB0, 0xBA
 AUDIO, SAMPLING_FREQUENCY, CHANNELS, BIT_DEPTH = 0xE1, 0xB5, 0x9F, 0x6264
 CLUSTER, TIMESTAMP, SIMPLE_BLOCK = 0x1F43B675, 0xE7, 0xA3
+SEEK_HEAD, SEEK, SEEK_ID, SEEK_POSITION = 0x114D9B74, 0x4DBB, 0x53AB, 0x53AC
+CUES, CUE_POINT, CUE_TIME, CUE_TRACK_POSITIONS, CUE_TRACK, CUE_CLUSTER_POSITION = (
+    0x1C53BB6B, 0xBB, 0xB3, 0xB7, 0xF7, 0xF1)
 OPEN_SIZE = b"\x01" + b"\xff" * 7    # "length not known", in eight bytes: the place close() writes the length to
 NO_PICTURE = (640, 480)              # the size written for a recording no picture came into
 
@@ -159,6 +165,9 @@ class MkvWriter:
 
     The file is a whole one from its first byte on: its length and its duration are left open,
     which Matroska allows, and written by close(). A recording whose writer died still plays.
+    close() also writes the list of where each cluster begins (the cues) behind the last one, and
+    where that list is into the head of the file: a player jumps by it, and without it some
+    (GStreamer's) jump to the wrong place in a file they have not read through yet.
     """
 
     def __init__(self, path, audio: bool = True, size: tuple[int, int] | None = None, rate: int = RATE):
@@ -166,20 +175,27 @@ class MkvWriter:
         self.has_audio = audio
         self.rate = rate
         self.bytes = 0             # in the file so far
+        self.frames = 0            # pictures in the file so far, not counting those written a second time
         self._blocks: list[bytes] = []   # the cluster being filled: kept here until it is whole
+        self._counted = 0          # the pictures in it that count
         self._cluster_ms = 0
+        self._cue: tuple[int, int] | None = None     # its first picture, (time, track); its first block if it has none
+        self._cues: list[tuple[int, int, int]] = []  # for every cluster on the disk: that, and where it begins
         self._last_ms = 0          # no block is written with a time before the one before it
         self._end_ms = 0.0         # where the last block ends
+        # EBML 1, ids of up to 4 bytes, lengths of up to 8; Matroska as of its version 2, which
+        # brought the SimpleBlock: nothing newer is used, so the oldest readers take the file.
         head = _el(EBML, _uint(0x4286, 1) + _uint(0x42F7, 1) + _uint(0x42F2, 4) + _uint(0x42F3, 8)
-                   + _text(0x4282, "matroska") + _uint(0x4287, 4) + _uint(0x4285, 2))
+                   + _text(0x4282, "matroska") + _uint(0x4287, 2) + _uint(0x4285, 2))
         self._size_at = len(head) + len(_id(SEGMENT))
-        self._body = self._size_at + len(OPEN_SIZE)
-        # The duration is not known yet: an empty element keeps its eleven bytes.
+        self._body = self._size_at + len(OPEN_SIZE)     # places inside the file are counted from here
+        # Where the cues are and the duration are not known yet: empty elements keep their bytes.
+        seek = _el(VOID, bytes(len(self._seek(0)) - 2))
         date = int((time.time() - 978307200) * 1e9)      # Matroska counts from the year 2001
         info = _el(INFO, _uint(TIMESTAMP_SCALE, 1000000) + _text(MUXING_APP, "marswalk")
                    + _text(WRITING_APP, "marswalk hub") + _el(DATE_UTC, struct.pack(">q", date))
                    + _el(VOID, bytes(9)))
-        self._duration_at = self._body + len(info) - 11
+        self._duration_at = self._body + len(seek) + len(info) - 11
         # The picture size goes last in its entry and its entry first in the list, so its place is known:
         # it is written again when the first picture has come.
         picture = self._picture(size or (0, 0))
@@ -192,27 +208,51 @@ class MkvWriter:
                            + _el(AUDIO, _el(SAMPLING_FREQUENCY, struct.pack(">d", rate))
                                  + _uint(CHANNELS, 1) + _uint(BIT_DEPTH, 16)))
         tracks = _el(TRACKS, entries)
-        self._picture_at += self._body + len(info) + len(tracks) - len(entries)
-        self._f = open(path, "wb")
-        self._f.write(head + _id(SEGMENT) + OPEN_SIZE + info + tracks)
-        self._f.flush()
-        self.bytes = self._f.tell()
+        self._picture_at += self._body + len(seek) + len(info) + len(tracks) - len(entries)
+        self._f = open(path, "wb", buffering=0)     # each write goes straight to the system, nothing is held back here
+        try:
+            self._append([head + _id(SEGMENT) + OPEN_SIZE + seek + info + tracks])
+        except OSError:
+            self._f.close()
+            raise
 
     @staticmethod
     def _picture(size) -> bytes:
         return _uint(PIXEL_WIDTH, size[0], 2) + _uint(PIXEL_HEIGHT, size[1], 2)
+
+    @staticmethod
+    def _seek(cues_at: int) -> bytes:
+        """The head's pointer to the cues. Always the same length, whatever the place."""
+        return _el(SEEK_HEAD, _el(SEEK, _el(SEEK_ID, _id(CUES)) + _uint(SEEK_POSITION, cues_at, 8)))
+
+    def _append(self, pieces: list):
+        """Onto the end of the file, all of it or nothing: what a disk that ran full took the
+        half of is cut off again, so the file ends with its last whole cluster."""
+        try:
+            for piece in pieces:
+                left = memoryview(piece)
+                while len(left):
+                    left = left[self._f.write(left):]
+        except OSError:
+            self._f.truncate(self.bytes)
+            self._f.seek(0, os.SEEK_END)
+            raise
+        self.bytes += sum(len(piece) for piece in pieces)
 
     def _rewrite(self, at: int, data: bytes):
         self._f.seek(at)
         self._f.write(data)
         self._f.seek(0, os.SEEK_END)
 
-    def video(self, ms: int, jpeg: bytes):
+    def video(self, ms: int, jpeg: bytes, again: bool = False):
+        """A picture. `again`: it is one that was written before (the recorder repeats a picture
+        that stood for long), so it is not counted."""
         if self.size is None:
             self.size = jpeg_size(jpeg)
             if self.size:
                 self._rewrite(self._picture_at, self._picture(self.size))
         ms = self._block(1, ms, jpeg)
+        self._counted += not again
         self._end_ms = max(self._end_ms, ms)
 
     def audio(self, ms: int, pcm: bytes):
@@ -225,7 +265,9 @@ class MkvWriter:
         self._last_ms = ms
         if not self._blocks or ms - self._cluster_ms >= CLUSTER_MS:
             self._flush()
-            self._cluster_ms = ms
+            self._cluster_ms, self._cue = ms, None
+        if self._cue is None or (track == 1 and self._cue[1] != 1):
+            self._cue = (ms, track)
         # track number, the time within the cluster, and "a whole picture": every block stands alone
         self._blocks += [_id(SIMPLE_BLOCK) + _size(len(data) + 4) + bytes([0x80 | track])
                          + struct.pack(">hB", ms - self._cluster_ms, 0x80), data]
@@ -235,20 +277,26 @@ class MkvWriter:
         """The cluster that was being filled goes to the disk, with its length in front."""
         if not self._blocks:
             return
-        stamp = _uint(TIMESTAMP, self._cluster_ms)
-        self._f.write(_id(CLUSTER) + _size(len(stamp) + sum(len(b) for b in self._blocks)) + stamp)
-        for b in self._blocks:
-            self._f.write(b)
-        self._f.flush()
-        self._blocks = []
-        self.bytes = self._f.tell()
+        # They are taken out first: if the disk refuses them they are gone, not written twice.
+        blocks, counted, self._blocks, self._counted = self._blocks, self._counted, [], 0
+        at, stamp = self.bytes - self._body, _uint(TIMESTAMP, self._cluster_ms)
+        self._append([_id(CLUSTER) + _size(len(stamp) + sum(len(b) for b in blocks)) + stamp, *blocks])
+        self._cues.append((*self._cue, at))
+        self.frames += counted
 
     def close(self, duration_ms: float | None = None):
-        """Writes what is still waiting, and the length and the duration into their places."""
+        """Writes what is still waiting, the cues, and the length and the duration into their places."""
         if self._f.closed:
             return
         try:
             self._flush()
+            if self._cues:
+                cues_at = self.bytes - self._body
+                self._append([_el(CUES, b"".join(
+                    _el(CUE_POINT, _uint(CUE_TIME, ms) + _el(CUE_TRACK_POSITIONS, _uint(CUE_TRACK, track)
+                                                             + _uint(CUE_CLUSTER_POSITION, at)))
+                    for ms, track, at in self._cues))])
+                self._rewrite(self._body, self._seek(cues_at))
             self._rewrite(self._size_at, _size(self.bytes - self._body, 8))
             self._rewrite(self._duration_at, _el(DURATION, struct.pack(">d", max(self._end_ms, duration_ms or 0.0))))
             if self.size is None:
@@ -297,9 +345,9 @@ class AudioMix:
         """Samples at `src_rate` as samples of the mix, for a stretch that begins at sample `pos` of
         the line. `pos` may lie between two samples: the chunks of a stream then join without a seam.
         Returns the first sample and the samples."""
-        first = math.ceil(pos)
-        count = math.ceil(pos + len(x) * self.rate / src_rate) - first
-        if src_rate == self.rate and first == pos:
+        first = math.floor(pos + 0.5)
+        count = math.floor(pos + len(x) * self.rate / src_rate + 0.5) - first
+        if src_rate == self.rate and abs(first - pos) < 1e-6:
             return first, x
         return first, np.interp((np.arange(count) + (first - pos)) * (src_rate / self.rate),
                                 np.arange(len(x)), x).astype(np.float32)
@@ -446,7 +494,6 @@ class _Recording:
         self.t0 = t0                 # the recorder's clock at the beginning
         self.audio = writer.has_audio
         self.waiting: queue.Queue = queue.Queue()
-        self.frames = 0              # the headset's pictures in the file
         self.dropped = 0             # pictures left out
         self.shown: tuple[int, bytes] | None = None   # the last picture and its time
         self.sound_ms = 0            # the sound is in the file up to here
@@ -496,6 +543,8 @@ class Recorder:
         with self._lock:
             if self._rec is not None:
                 return self.state()
+            if self._closing:
+                raise RecordError("the hub is shutting down")
             try:
                 self.folder.mkdir(parents=True, exist_ok=True)
                 free = shutil.disk_usage(self.folder).free
@@ -574,19 +623,22 @@ class Recorder:
         if rec is None:
             return dict(self._last) if self._last else None
         return {"on": True, "name": rec.name, "seconds": round(max(0.0, self.clock() - rec.t0), 1),
-                "frames": rec.frames, "bytes": rec.writer.bytes, "audio": rec.audio, "dropped": rec.dropped}
+                "frames": rec.writer.frames, "bytes": rec.writer.bytes, "audio": rec.audio, "dropped": rec.dropped}
 
     def recordings(self) -> list[dict]:
         """What is in the folder, the newest first: name, length, the sizes of the two files, and
         where the MP4 stands."""
         found: dict[str, dict] = {}
         try:
-            for path in self.folder.iterdir():
-                m = FILE.fullmatch(path.name)
-                if m:
-                    found.setdefault(m[1], {})[m[2]] = path.stat().st_size
+            for entry in os.scandir(self.folder):
+                m = FILE.fullmatch(entry.name)
+                try:
+                    if m:
+                        found.setdefault(m[1], {})[m[2]] = entry.stat().st_size
+                except OSError:
+                    pass                # deleted this moment
         except OSError:
-            return []
+            return []                   # no folder yet: nothing was recorded
         rec, out = self._rec, []
         for name in sorted(found, reverse=True)[:LISTED]:
             sizes = found[name]
@@ -661,13 +713,13 @@ class Recorder:
         next one. At the end of the recording too, and there a second time, or the MP4's pictures
         would end half way to it."""
         upto_ms = int(upto * 1000) if last else int(upto / STEP_S) * int(STEP_S * 1000)
-        blocks, later = [], []      # a block: (time, track, data, is it a picture of the headset's)
+        blocks, later = [], []      # a block: (time, track, data, is it a picture written again)
 
         def again(ms: int, end: bool = False):
             if rec.shown and ms - rec.shown[0] > STILL_MS:
-                blocks.append((ms - FRAME_MS, 1, rec.shown[1], False))
+                blocks.append((ms - FRAME_MS, 1, rec.shown[1], True))
                 if end:
-                    blocks.append((ms, 1, rec.shown[1], False))
+                    blocks.append((ms, 1, rec.shown[1], True))
 
         for seconds, jpeg in pictures:
             ms = round(seconds * 1000)
@@ -677,7 +729,7 @@ class Recorder:
                 rec.dropped += 1                 # from before the beginning, or not a picture
             else:
                 again(ms)
-                blocks.append((ms, 1, jpeg, True))
+                blocks.append((ms, 1, jpeg, False))
                 rec.shown = (ms, jpeg)
         pictures[:] = later
         if last:
@@ -686,29 +738,29 @@ class Recorder:
             until = min(rec.sound_ms + int(STEP_S * 1000), upto_ms)
             blocks.append((rec.sound_ms, 2, mix.take(until / 1000).tobytes(), False))
             rec.sound_ms = until
-        for ms, track, data, counts in sorted(blocks, key=lambda b: b[:2]):
+        for ms, track, data, repeated in sorted(blocks, key=lambda b: b[:2]):
             if track == 1:
-                rec.writer.video(ms, data)
-                rec.frames += counts
+                rec.writer.video(ms, data, repeated)
             else:
                 rec.writer.audio(ms, data)
 
     def _finish(self, rec: _Recording, end: float, why: str | None):
         try:
             rec.writer.close(end * 1000)
-        except OSError as err:     # the file keeps its open length: it still plays
-            why = why or ("disk full" if err.errno == errno.ENOSPC else "write error")
+        except Exception as err:   # the file keeps its open length: it still plays. Whatever went
+            # wrong, the recording must be over after this, or no other could ever begin.
+            why = why or ("disk full" if getattr(err, "errno", None) == errno.ENOSPC else "write error")
             log.warning("recording %s not finished cleanly: %s", rec.name, err)
-        final = {"on": False, "name": rec.name, "seconds": round(end, 1), "frames": rec.frames,
+        final = {"on": False, "name": rec.name, "seconds": round(end, 1), "frames": rec.writer.frames,
                  "bytes": rec.writer.bytes, "audio": rec.audio, "dropped": rec.dropped}
         if why:
             final["stopped"] = why
         log.info("recording %s ended%s: %.1f s, %d pictures (%d left out), %.1f MB", rec.name,
-                 f" ({why})" if why else "", end, rec.frames, rec.dropped, rec.writer.bytes / 1e6)
+                 f" ({why})" if why else "", end, rec.writer.frames, rec.dropped, rec.writer.bytes / 1e6)
         with self._lock:
             self._lengths[rec.name] = final["seconds"]
             worker = None
-            if self.convert and not self._closing and rec.frames and rec.writer.size:
+            if self.convert and not self._closing and rec.writer.frames and rec.writer.size:
                 self._made[rec.name] = "converting"
                 worker = threading.Thread(target=self._convert, args=(rec.name, rec.writer.size, rec.audio, end),
                                           name="convert", daemon=True)
@@ -737,6 +789,8 @@ class Recorder:
                 proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                         stderr=subprocess.PIPE, start_new_session=True)
                 self._procs.add(proc)
+                if self._closing:      # close() looked for it a moment too early
+                    proc.kill()
                 try:
                     err = proc.communicate(timeout=600 + 20 * seconds)[1]
                 except subprocess.TimeoutExpired:
@@ -755,7 +809,9 @@ class Recorder:
             finally:
                 for left in (part, Path(f"{part}.tmp")):
                     left.unlink(missing_ok=True)
+            if self._closing:
+                self._made[name] = "master only"     # ended with the hub, not by a fault
+                return
             self._made[name] = "failed"
-            if not self._closing:
-                log.warning("no MP4 of %s (gst-launch said %s): %s", name, code,
-                            err.decode(errors="replace").strip()[-400:])
+            log.warning("no MP4 of %s (gst-launch said %s): %s", name, code,
+                        err.decode(errors="replace").strip()[-400:])

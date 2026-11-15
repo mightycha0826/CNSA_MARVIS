@@ -123,6 +123,7 @@ class Mirror:
         self.sources: set[web.WebSocketResponse] = set()
         self.viewers = 0                 # monitor pages open (/monitor.mjpg streams)
         self.recorder = None             # the hub's recorder, if it has one: while it is on, pictures are wanted too
+        self.told = 0                    # the "viewers" the apps were told last
         self.frame: bytes | None = None
         self.seq = 0                 # frames received since the hub started
         self.at = 0.0                # monotonic time of the newest frame
@@ -160,6 +161,7 @@ class Mirror:
 
     async def _tell_sources(self):
         msg = self._hello()
+        self.told = self.wanted()
         for ws in list(self.sources):
             try:
                 await ws.send_str(msg)
@@ -186,6 +188,10 @@ class Mirror:
                             self.recorder.frame(self.frame, self.at)
                         async with self.fresh:
                             self.fresh.notify_all()
+                        # A recording can end by itself (its time is up, the disk is full) and
+                        # nobody presses a button then: the app hears of it with its next picture.
+                        if self.wanted() != self.told:
+                            await self._tell_sources()
                     # The app counts what it sent against this: it knows how many pictures are
                     # still on the way, and how long one takes to arrive.
                     await ws.send_str(json.dumps({"ack": got}))
@@ -265,12 +271,15 @@ class Mirror:
             return web.json_response({"error": '{"on": true} or {"on": false} expected'}, status=400)
         if self.recorder is None:
             return web.json_response({"error": "this hub has no recorder"}, status=409)
+        # In a thread: the start makes a file and the stop waits until the last of it is written,
+        # and the pictures and the voices must keep coming through meanwhile.
         try:
             if body["on"] and not self.recorder.on:
-                self.recorder.start()
-                log.info("recording started by %s: %s", request.remote, self.recorder.state())
+                state = await asyncio.to_thread(self.recorder.start)
+                log.info("recording started by %s: %s", request.remote, state)
             elif not body["on"] and self.recorder.on:
-                log.info("recording stopped by %s: %s", request.remote, self.recorder.stop())
+                state = await asyncio.to_thread(self.recorder.stop)
+                log.info("recording stopped by %s: %s", request.remote, state)
         except Exception as err:   # RecordError (disk short, folder), or anything the disk throws
             log.warning("recording: %s", err)
             return web.json_response({"error": str(err)}, status=409)
@@ -281,7 +290,7 @@ class Mirror:
         """A finished recording as a download. Only our own file names: nothing else in the folder,
         and no way out of it."""
         name = request.match_info["name"]
-        if self.recorder is None or not RECORDING_NAME.match(name):
+        if self.recorder is None or not RECORDING_NAME.fullmatch(name):
             raise web.HTTPNotFound()
         path = self.recorder.folder / name
         if not path.is_file():

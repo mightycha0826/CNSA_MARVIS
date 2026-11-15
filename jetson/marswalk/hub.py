@@ -14,6 +14,7 @@ import asyncio
 import json
 import logging
 import re
+import signal
 import ssl
 import time
 import wave
@@ -66,6 +67,7 @@ class Client:
     mic_buf: bytearray = field(default_factory=bytearray)   # push-to-talk audio between mic.begin and mic.end
     mic_rate: int = 16000
     mic_on: bool = False
+    mic_live: bool = False            # between mic.begin and mic.end: what comes is this headset's microphone
     segmenter: object | None = None   # set while the client streams its microphone continuously
     dictate: dict | None = None       # {"id", "until"} while this headset wants its next words as text
 
@@ -183,8 +185,8 @@ class Hub:
             self.mute_until = time.monotonic() + secs + MUTE_TAIL_S
             await self.broadcast("tts.begin", {"sampleRate": self.tts.sample_rate,
                                                "priority": priority})
-            if self.recorder.on:
-                self.recorder.speech(pcm, self.tts.sample_rate)
+            if self.recorder.on and self.clients:   # the recording holds what a headset was given to play
+                self.recorder.speech(pcm, self.tts.sample_rate, urgent=priority == "urgent")
             for i in range(0, len(pcm), TTS_CHUNK):
                 if epoch != self.say_epoch:
                     break
@@ -293,8 +295,10 @@ class Hub:
 
     def on_audio(self, client: Client, data: bytes):
         """A binary frame is microphone audio: 16-bit mono PCM at the rate given in mic.begin."""
-        if self.recorder.on and (client.segmenter is not None or client.mic_on):
-            self.recorder.mic(data, client.mic_rate, src=client.peer)   # before the mute: the recording hears the wearer always
+        if client.mic_live and self.recorder.on:
+            # Before the mute, and with or without a recogniser: the recording hears the wearer always.
+            # Each connection is a stream of its own, also two from one address.
+            self.recorder.mic(data, client.mic_rate, src=id(client))
         if client.segmenter is not None:
             if time.monotonic() < self.mute_until:
                 client.segmenter.reset()        # the hub is speaking: not a command
@@ -327,6 +331,7 @@ class Hub:
 
     async def on_mic_begin(self, client: Client, p: dict):
         client.mic_rate = int(p.get("sampleRate", 16000))
+        client.mic_live = True
         if p.get("stream"):
             # Continuous stream: the hub finds the utterances itself.
             client.segmenter = client.segmenter or make_segmenter()
@@ -342,6 +347,7 @@ class Hub:
             client.mic_on = True
 
     async def on_mic_end(self, client: Client, p: dict):
+        client.mic_live = False
         if client.segmenter is not None:
             client.segmenter = None
             log.info("mic stream from %s ended", client.peer)
@@ -482,22 +488,31 @@ def build_app(hub: Hub) -> web.Application:
     app.router.add_get("/", index)
     app.router.add_static("/", static_dir, show_index=False)
 
+    tasks = []
+
     async def on_startup(app):
-        app["tasks"] = [asyncio.create_task(hub.telemetry_loop()),
-                        asyncio.create_task(hub.suit.run())]
+        tasks.extend([asyncio.create_task(hub.telemetry_loop()),
+                      asyncio.create_task(hub.suit.run())])
+
+    async def on_shutdown(app):
+        # First of all, before the connections are waited for: a recording that runs is
+        # finished, not cut off. In a thread, the disk may take a moment.
+        await asyncio.to_thread(hub.recorder.close)
 
     async def on_cleanup(app):
-        for t in app["tasks"]:
+        for t in tasks:
             t.cancel()
-        hub.recorder.close()   # a recording that runs is finished, not cut off
     app.on_startup.append(on_startup)
+    app.on_shutdown.append(on_shutdown)
     app.on_cleanup.append(on_cleanup)
     return app
 
 
 async def serve(args):
     hub = Hub(args)
-    runner = web.AppRunner(build_app(hub))
+    # The hub's connections never end by themselves (the headset, the monitor's stream): at
+    # the end they get 2 s, not aiohttp's minute.
+    runner = web.AppRunner(build_app(hub), shutdown_timeout=2.0)
     await runner.setup()
 
     cert, key = Path(args.cert_dir) / "cert.pem", Path(args.cert_dir) / "key.pem"
@@ -516,7 +531,17 @@ async def serve(args):
                  args.host, args.http_port)
     log.info("stt=%s tts=%s serial=%s dev=%s wake=%s", hub.stt.name, hub.tts.name,
              args.serial or "auto", args.dev, args.wake_word)
-    await asyncio.Event().wait()
+    # Ctrl-C ends the wait from outside; "kill" and the one click start send TERM. Either way
+    # the hub ends tidily: a recording that runs is finished first (build_app, on_shutdown).
+    stop = asyncio.Event()
+    try:
+        asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, stop.set)
+    except (NotImplementedError, RuntimeError):
+        pass   # a system without such signals
+    try:
+        await stop.wait()
+    finally:
+        await runner.cleanup()
 
 
 def main():
