@@ -1,7 +1,9 @@
-# Marswalk Visor (working title)
+# MARVIS
 
 **A three-layer map on a Mars explorer's helmet.**
 An entry for the 2026 NASA Space Apps Challenge — *Interplanetary Survival Guide: Martian Map*.
+
+The project was called Marswalk Visor until 2026-11-15. Names in the code (`marswalk`, the `MARSWALK` hotspot, the demo video's file name) keep the old name.
 
 > A helmet HUD that builds the map and the route from NASA data, fills in nearby obstacles with the helmet's sensors, and changes the route when the suit's condition becomes dangerous.
 
