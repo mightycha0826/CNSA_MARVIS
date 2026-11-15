@@ -29,7 +29,7 @@
 // turns the layer before it off and the new one on.
 //
 // Not checked on the headset: text size and legibility, translucent cards, the palm direction
-// test, pressing tabs with the pointer (pointer.js).
+// test, pressing tabs with the pointer (pointer.js), the hand spinning the vitals figure (suit.js, spin.js).
 
 import * as THREE from 'three';
 import { HUD } from './config.js';
