@@ -21,6 +21,7 @@ from PIL import Image, ImageDraw
 
 HERE = Path(__file__).resolve().parent
 DATA = Path(os.environ.get("MARSWALK_OUT") or HERE.parent / "web" / "public" / "data")
+CACHE = Path(os.environ.get("MARSWALK_CACHE") or HERE / "cache")
 KINDS = {"optical", "thermal", "spectral", "topographic", "geophysical", "atmospheric", "radiation", "chemical", "derived"}
 SLOPE_LIMITS = (10, 15, 20, 25, 30)
 
@@ -133,6 +134,102 @@ report["slope_at_rover_stops_deg"] = {"median": round(float(np.median(at_stops))
 report["rover_tilt_deg"] = {"median": round(float(np.median(tilt)), 1), "p90": round(float(np.percentile(tilt, 90)), 1), "max": round(float(tilt.max()), 1)}
 check(abs(np.median(at_stops) - np.median(tilt)) < 3,
       f"median slope where the rover stood {np.median(at_stops):.1f} deg is close to the median rover tilt {np.median(tilt):.1f} deg")
+
+# How accurate is the slope layer? The tilt the rover measured at its stops is the only ground
+# truth there is for it: taken on the ground, over the rover's own footprint of about 3 m.
+# (Its limits: the rover drives where the ground is gentle, and its tilt is not the terrain's
+# slope where a wheel stands on a rock.)
+
+
+def against_tilt(values):
+    """Error of slope values (degrees, one per rover stop) against the rover's tilt there."""
+    err = np.asarray(values) - tilt
+    return {"bias": round(float(err.mean()), 2), "mean_abs_error": round(float(np.abs(err).mean()), 2),
+            "rms_error": round(float(np.sqrt((err ** 2).mean())), 2),
+            "correlation": round(float(np.corrcoef(values, tilt)[0, 1]), 3)}
+
+
+acc = against_tilt(at_stops)
+# What a reader of the layer needs: given the value the layer shows, what did the rover measure?
+# (Grouping by the rover's tilt instead would mostly show regression to the mean.)
+bands = []
+for lo, hi in ((0, 5), (5, 10), (10, 15), (15, 90)):
+    m = (at_stops >= lo) & (at_stops < hi)
+    bands.append({"layer_deg": [lo, hi], "n": int(m.sum()), "layer_minus_tilt": round(float((at_stops[m] - tilt[m]).mean()), 2)})
+gain, offset = np.polyfit(at_stops, tilt, 1)
+spread = float(np.std(tilt - (gain * at_stops + offset)))
+within_3 = float((np.abs(at_stops - tilt) <= 3).mean())
+# With that line and its spread: how often is ground the layer gives as 17 deg really 20 deg or more?
+over_20_at_17 = 0.5 * (1 - math.erf((20 - (gain * 17 + offset)) / (spread * math.sqrt(2))))
+# How well does the rover's tilt repeat? Stops less than half a metre apart, and how their tilts differ.
+east_m = np.array([(p["lon"] - b["west"]) * deg_m * math.cos(math.radians(p["lat"])) for p in pts])
+north_m = np.array([(p["lat"] - b["south"]) * deg_m for p in pts])
+repeat = [abs(tilt[i] - tilt[j]) for i in range(len(pts)) for j in range(i + 1, len(pts))
+          if math.hypot(east_m[i] - east_m[j], north_m[i] - north_m[j]) < 0.5]
+report["slope_vs_rover_tilt"] = {"n": len(pts), **acc, "share_within_3_deg": round(within_3, 3), "by_layer_value": bands,
+                                 "tilt_given_layer": {"gain": round(float(gain), 3), "offset_deg": round(float(offset), 2),
+                                                      "residual_sd_deg": round(spread, 2),
+                                                      "share_20_deg_or_more_where_layer_is_17": round(over_20_at_17, 3)},
+                                 "rover_tilt_repeat": {"stops_closer_than_m": 0.5, "pairs": len(repeat),
+                                                       "mean_tilt_difference_deg": round(float(np.mean(repeat)), 2) if repeat else None}}
+check(acc["mean_abs_error"] < 2.5 and acc["correlation"] > 0.75,
+      f"slope against the rover's tilt at {len(pts)} stops: mean absolute error {acc['mean_abs_error']:.2f} deg, "
+      f"bias {acc['bias']:+.2f} deg, correlation {acc['correlation']:.2f}")
+print(f"       within 3 deg at {within_3:.0%} of the stops; 17 deg on the layer was 20 deg or more {over_20_at_17:.0%} of the time; "
+      f"the rover's own tilt differs by {np.mean(repeat):.2f} deg between stops less than 0.5 m apart ({len(repeat)} pairs)")
+print(f"       where the layer shows s, the rover measured {gain:.2f} x s + {offset:.1f} deg on average, give or take {spread:.1f} deg; "
+      + "layer minus tilt by layer value: "
+      + ", ".join(f"{x['layer_deg'][0]}-{x['layer_deg'][1]} deg: {x['layer_minus_tilt']:+.1f} (n={x['n']})" for x in bands))
+
+
+def slope_baseline_study():
+    """Would a finer slope be more accurate? The same comparison for other ways of computing
+    slope from the 1 m terrain, each scored against the rover's tilt. Needs cache/dem_1m.npy
+    (written by `build_data.py topo`, or unpacked from the source bundle)."""
+    path = CACHE / "dem_1m.npy"
+    if not path.exists():
+        print(f"  --   slope baseline study skipped: {path.name} is not in the cache (see README: build_data.py topo, or the source bundle)")
+        return
+    dem = np.load(path).astype(np.float64)[::-1]           # row 0 = south, like the layers
+    n = dem.shape[0]
+    k = n // rows                                           # 1 m pixels per cell side
+    east = np.array([(p["lon"] - b["west"]) / (b["east"] - b["west"]) * n for p in pts])      # metres from the west edge
+    north = np.array([(p["lat"] - b["south"]) / (b["north"] - b["south"]) * n for p in pts])
+    at = lambda grid: np.array([grid[p["cell"][1], p["cell"][0]] for p in pts])
+    angle = lambda gx, gy: np.degrees(np.arctan(np.hypot(gx, gy)))
+    in_cells = lambda a: a.reshape(rows, k, cols, k).mean(axis=(1, 3))
+
+    def plane(w):
+        """Slope of the plane fitted to the w x w m of 1 m heights centred on each stop's exact place."""
+        x = np.arange(w) - (w - 1) / 2
+        sxx = (x ** 2).sum() * w
+        out = []
+        for e, nn in zip(east, north):
+            c0 = min(max(int(round(e - w / 2)), 0), n - w)
+            r0 = min(max(int(round(nn - w / 2)), 0), n - w)
+            z = dem[r0:r0 + w, c0:c0 + w]
+            out.append(angle((z * x[None, :]).sum() / sxx, (z * x[:, None]).sum() / sxx))
+        return np.array(out)
+
+    study = [{"how": f"plane over {w} x {w} m of the 1 m terrain, at the stop's exact place", "baseline_m": w, **against_tilt(plane(w))}
+             for w in (2, 3, 4, 6, 8, 10, 14)]
+    gy1, gx1 = np.gradient(dem, 1.0)
+    study.append({"how": "gradient of the 1 m terrain (2 m baseline), mean angle in the cell", "baseline_m": 2,
+                  **against_tilt(at(in_cells(angle(gx1, gy1))))})
+    study.append({"how": "gradient of the 1 m terrain (2 m baseline), angle of the cell's mean gradient", "baseline_m": 2,
+                  **against_tilt(at(angle(in_cells(gx1), in_cells(gy1))))})
+    report["slope_baseline_study"] = {"layer": {"how": "the slope layer: gradient of the 4 m cells (8 m baseline)", "baseline_m": 8, **acc},
+                                      "alternatives": study}
+    print("       other ways of computing slope from the 1 m terrain, against the same rover tilts:")
+    for x in study:
+        print(f"         {x['how']:78s} mean abs error {x['mean_abs_error']:.2f}, correlation {x['correlation']:.2f}")
+    best = min(study, key=lambda x: x["mean_abs_error"])
+    check(acc["mean_abs_error"] <= best["mean_abs_error"] + 0.1,
+          f"no way of computing slope from the 1 m terrain agrees with the rover's tilt better by more than 0.1 deg: "
+          f"layer {acc['mean_abs_error']:.2f} deg, best alternative {best['mean_abs_error']:.2f} deg ({best['how']})")
+
+
+slope_baseline_study()
 
 # Optical image versus terrain: brightness in the optical image depends on which way a slope faces the sun.
 # Shade the terrain from several sun directions, keep the one most like the optical image, then shift it to find the best fit.

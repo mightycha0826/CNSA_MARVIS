@@ -27,6 +27,10 @@
 //
 // An image layer gets its URL from ctx.assetUrl(layer.file) (the same code runs in mock mode).
 // The numeric grids are grids.topo and grids.slope of layers:ready (Float32Array, index row * cols + col).
+//
+// Not checked on the headset: the frame rate with the relief of 257 vertices per side, and how its
+// light from the terrain's own normals looks over passthrough (config.js: maxVerticesPerSide;
+// ?mapMesh=129 is the mesh and the light of before). On a PC, __map.state().mesh says which is in use.
 
 import * as THREE from 'three';
 import { MAP, rampColor } from './config.js';
@@ -266,7 +270,9 @@ function load(payload) {
     transform = createGridFrame(data.layerSet); arrays = terrainArrays(data.grids.topo, data.layerSet.grid);
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.BufferAttribute(arrays.positions, 3)); geometry.setAttribute('uv', new THREE.BufferAttribute(arrays.uv, 2));
-    geometry.setIndex(arrays.indices); geometry.computeVertexNormals();
+    geometry.setIndex(arrays.indices);
+    // Lit with the terrain's own normals (terrain.js). A mesh too coarse for them (?mapMesh=129) is lit from its own faces, as before.
+    if (arrays.normals) geometry.setAttribute('normal', new THREE.BufferAttribute(arrays.normals, 3)); else geometry.computeVertexNormals();
     surface = new THREE.Mesh(geometry, new THREE.MeshLambertMaterial({ color: 0xffffff, side: THREE.DoubleSide, transparent: true, alphaTest: 0.01 }));
     content = new THREE.Group(); content.name = 'map-content'; root.add(content);
     fadeBeyondCircle(surface.material, MAP.widthM, { view }); // the map dissolves outside the circle its hologram stands on
@@ -362,8 +368,9 @@ export function mapTargetCell() {
 
 export function init(context) {
   dispose(); ctx = context; root = new THREE.Group(); root.name = 'palm-map'; ctx.scene.add(root);
-  // PC testing without a headset: __map.unfold(true) unfolds the map as a fist under it would (false folds it, null gives it back to the hand); __map.zoom(2) enlarges the content around the wearer.
-  if (typeof window !== 'undefined') window.__map = { zoom: z => { forcedZoom = z; }, unfold: on => { unfoldTest = on; }, state: () => ({ zoom, unfolded, shownM: transform ? transform.width / zoom : null, markers: [...placed.keys()].map(m => `${m.name}${m.visible ? '' : ' (hidden)'}`) }) };
+  // PC testing without a headset: __map.unfold(true) unfolds the map as a fist under it would (false folds it, null gives it back to the hand); __map.zoom(2) enlarges the content around the wearer; __map.state().mesh says how fine the relief is and what lights it.
+  if (typeof window !== 'undefined') window.__map = { zoom: z => { forcedZoom = z; }, unfold: on => { unfoldTest = on; }, state: () => ({ zoom, unfolded, shownM: transform ? transform.width / zoom : null, markers: [...placed.keys()].map(m => `${m.name}${m.visible ? '' : ' (hidden)'}`),
+    mesh: surface ? { verticesPerSide: MAP.maxVerticesPerSide, triangles: surface.geometry.index.count / 3, normals: arrays?.normals ? 'terrain' : 'mesh' } : null }) };
   root.position.set(0, 0.85, 0); root.scale.setScalar(MAP.desktopScale); root.rotation.x = MAP.desktopTiltRad;
   off.push(ctx.bus.on('layers:ready', load), ctx.bus.on('layer:toggle', ({ id, visible }) => { void selectLayer(id, visible); }),
     ctx.bus.on('nav:position', ({ point }) => setCurrent(point)), ctx.bus.on('nav:route', event => {

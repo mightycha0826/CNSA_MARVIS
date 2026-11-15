@@ -143,7 +143,7 @@ Every task below is done and the files are in `web/public/data/`. What each file
 | Task | Result |
 |---|---|
 | Submission requirements | Read from the official guide; summary at the top of [SUBMISSION.md](SUBMISSION.md) |
-| Optical, terrain, slope, thermal layers | Built. `validate.py` passes 54 checks |
+| Optical, terrain, slope, thermal layers | Built. `validate.py` passes 56 checks |
 | Elevation reference and overlap | Terrain and rover record agree (−0.17 m on average); terrain and optical overlap within 4 m |
 | Traverse | 178 stops inside the map extent |
 | Radiation and atmosphere (`env.json`) | Real RAD and REMS values for sol 4200, 24 hourly samples. No published fixed value is used |
