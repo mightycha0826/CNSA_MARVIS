@@ -11,8 +11,9 @@
 // at first and then ever more slowly. The readings on their chips do not turn with it.
 // Only a move of the hand itself counts: walking, a step aside or turning the head do not
 // spin it (turning the whole body with the hand held out does: the hand sweeps through the
-// room then). Bringing the hand back pushes it the other way, so a quick move out and back
-// leaves it about where it was: move the hand and let it rest. Not checked on the headset:
+// room then, and so does moving the head sideways past a hand held still). Bringing the hand
+// back pushes it the other way just as much, so a move out and back does not leave it
+// spinning: to spin it, move the hand and let it rest. Not checked on the headset:
 // the numbers in HUD.suit.spin are set from arithmetic and a PC browser, not from real hand
 // tracking.
 //
@@ -600,7 +601,13 @@ export function createSuit(ctx) {
     // axis the head turns on, a little behind the eyes: the eyes themselves swing sideways
     // when the head turns. Null in the first frame it is up and in the first after the hand
     // was out of sight.
-    ctx.camera.getWorldPosition(headAt).addScaledVector(palmState.forward, -K.spin.neckM);
+    // The head of this frame, as the joints are this frame's: the camera is still the frame
+    // before's here (three.js moves it when it draws, after the modules' update), and with
+    // uneven frames a walk would leak into the measurement.
+    const viewer = frame.xrFrame?.getViewerPose?.(frame.refSpace);
+    if (viewer) headAt.copy(viewer.transform.position);
+    else ctx.camera.getWorldPosition(headAt);
+    headAt.addScaledVector(palmState.forward, -K.spin.neckM);
     sidewaysMps = hand.measure(palmState.palm.x, palmState.palm.z, headAt.x, headAt.z, palmState.right.x, palmState.right.z, frame.dt);
     up = true;
     goneSince = null;

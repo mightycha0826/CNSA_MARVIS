@@ -298,3 +298,26 @@ test('the push grows from nothing above deadMps, and a jump of the tracking coun
   most.step(1 / 72, K.maxMps);
   assert.deepEqual(jump.state(), most.state());
 });
+
+test('the hand\'s speed is smoothed over smoothS whatever the frame time, dies away when there is no hand, and a jump counts the same either way', () => {
+  for (const mps of [1, -1]) {
+    const one = createSpin(K);
+    one.step(K.smoothS, mps); // one frame as long as smoothS: 1 - 1/e of the way there
+    assert.ok(Math.abs(one.state().handMps - mps * (1 - Math.exp(-1))) < 1e-12, `taken as ${one.state().handMps} m/s`);
+    const many = createSpin(K);
+    for (let k = 0; k < 64; k++) many.step(K.smoothS / 64, mps); // the same time in 64 frames
+    assert.ok(Math.abs(many.state().handMps - one.state().handMps) < 1e-12);
+    // The hand lost in the middle of a move (null): what was taken as its speed dies away as if it
+    // had stopped, and the figure comes back to its usual turn with no hand at all.
+    one.step(K.smoothS, null);
+    assert.ok(Math.abs(one.state().handMps - mps * (1 - Math.exp(-1)) * Math.exp(-1)) < 1e-12);
+    run(one, 15, () => null);
+    assert.ok(Math.abs(one.state().rate - USUAL) < 0.01, `no hand for 15 s: ${one.state().rate} rad/s`);
+    // A jump of the tracking counts as maxMps at most, to the left as to the right.
+    const jump = createSpin(K);
+    const most = createSpin(K);
+    jump.step(1 / HZ, 50 * mps);
+    most.step(1 / HZ, K.maxMps * mps);
+    assert.deepEqual(jump.state(), most.state());
+  }
+});
