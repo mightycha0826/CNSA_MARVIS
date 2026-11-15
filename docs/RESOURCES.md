@@ -286,7 +286,7 @@ Still unknown: the exact position of the rock that was cracked open, and what sl
 
 ## 8. What we built from these resources (C, 2026-11-14)
 
-Everything below is in the repository. One script (`data-pipeline/build_data.py`) rebuilds all the data files from the addresses in this document, and a second (`data-pipeline/validate.py`) runs 54 checks on them. File-by-file detail is in [DATA.md](DATA.md).
+Everything below is in the repository. One script (`data-pipeline/build_data.py`) rebuilds all the data files from the addresses in this document, and a second (`data-pipeline/validate.py`) runs 56 checks on them. File-by-file detail is in [DATA.md](DATA.md).
 
 ### Data files, in `web/public/data/`
 
@@ -322,7 +322,7 @@ The source files the pipeline downloads are kept out of the repository (about 10
 | File | Content |
 |---|---|
 | `data-pipeline/build_data.py` | Downloads the sources and builds every file above. Rebuilding from an empty cache gives byte-identical files |
-| `data-pipeline/validate.py` | 54 checks: format against INTERFACES, layers against each other, slope criterion analysis |
+| `data-pipeline/validate.py` | 56 checks: format against INTERFACES, layers against each other, slope criterion analysis |
 | `data-pipeline/validation_report.json` | The numbers the checks computed; the figures quoted in the docs come from here |
 | `data-pipeline/reference_route.json` | A route from base to the survey site computed from the slope layer, for comparison with D's route |
 | `data-pipeline/check_overlay.png` | The rover path laid over optical, terrain shading, slope and thermal |

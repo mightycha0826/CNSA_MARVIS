@@ -12,6 +12,7 @@ import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { loadCData } from './c-data.js';
 import { analyzeRoute } from './analysis.js';
+import { nearbyWaypoint } from '../core/waypoints.js';
 
 function field(cols, rows, fn = () => 1) {
   const costs = Float32Array.from({ length: cols * rows }, (_, i) => fn(i % cols, Math.floor(i / cols)));
@@ -256,6 +257,31 @@ test('C terrain produces a physical Mars route independent of display and demo s
     const otherRoute = plan(otherField, base, site); close(otherRoute.cost, result.cost);
     assert.deepEqual(otherRoute.points, result.points);
   }
+});
+
+// The slope layer is off by about 2 degrees against the tilt the rover measured (docs/DATA.md
+// sections 4 and 6; map/terrain.test.js and data-pipeline/validate.py hold it to that). What the
+// planner makes of it has to stand that error: the ground the rover stood on stays open to a
+// walker, and the routes of the demo stay open with every cell stressDeg steeper, twice the
+// layer's error. A rebuilt slope.bin has to pass this before its hash is pinned in the test above.
+const SLOPE_CHECK = { maxStopsClosed: 1, stressDeg: 5 };
+
+test('the ground the rover stood on stays open to a walker: at most one of its 178 stops is on a closed cell', () => {
+  const { layerSet, grids, traverse } = loadCData();
+  const closed = traverse.points.filter(p => !(grids.slope[p.cell[1] * layerSet.grid.cols + p.cell[0]] <= NAV.maxSlopeDeg));
+  assert.equal(traverse.points.length, 178);
+  // one now: sol 3928, where the rover itself was tilted 21.5 degrees
+  assert.ok(closed.length <= SLOPE_CHECK.maxStopsClosed, `${closed.length} rover stops are on cells the planner closes`);
+});
+
+test('the routes of the demo stay open when every cell is 5 degrees steeper than the layer says', () => {
+  const { layerSet, grids } = loadCData();
+  const cellOf = id => layerSet.waypoints.find(w => w.id === id).cell;
+  const near = nearbyWaypoint(layerSet, 20, grids.slope); // where "Navigate" goes first: 20 m is nearbyM in core/config.js
+  assert.deepEqual(near.cell, [248, 352]);
+  const steeper = { topo: grids.topo, slope: grids.slope.map(s => s + SLOPE_CHECK.stressDeg) };
+  const field = combineCosts(buildTerrain(layerSet, steeper));
+  for (const goal of [cellOf('site1'), near.cell]) assert.equal(plan(field, cellOf('base'), goal).status, 'ok', `no route to ${goal}`);
 });
 
 test('20-degree boundary is allowed, steeper slopes and missing data are excluded', () => {

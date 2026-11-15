@@ -61,6 +61,9 @@ This covers five of the data kinds named in the challenge text (topographic, opt
 - **Processing:** only the 2,048×2,048 pixel map window was read, not the whole file (the server accepts partial requests). The 1 m values were averaged 4×4 into 4 m cells. Slope is computed on the 4 m grid from the elevation difference to neighboring cells (8 m baseline for interior cells).
 - **Value range:** elevation −3846.56 to −3412.10 m, slope 0.03 to 71.07°. No empty cells.
 - **What slope means:** the average tilt seen over an 8 m width. Rocks and ledges smaller than that do not show. Filling that gap is A's field scan.
+- **How accurate it is:** against the tilt the rover itself measured at its 178 stops, the layer is off by 1.90° on average (mean absolute error; bias −0.82°, correlation 0.82), and within 3° at 81 % of the stops. Where the layer shows a slope *s*, the rover measured 0.97 × *s* + 1.1° on average, give or take 2.4°: a place the layer gives as 17° was 17.6° on average, and 20° or more about one time in seven. Read a slope from this layer as ± 2°. (The rover's own tilt differs by 1.3° between stops less than half a metre apart (8 pairs), so not all of the 1.90° is the layer's.)
+- **What that check cannot say:** the rover kept to gentle ground. Only 9 of its 178 stops are on cells the layer puts above 15°, and one above 20°. The layer is checked where one would walk, hardly at the 20° limit and not on the steep ground beyond it (which the planner closes).
+- **Why not a finer baseline:** we tried (2026-11-15). The 1 m terrain is too noisy at short distances: slope over 2 to 4 m agrees with the rover *worse* (2.0° to 2.2°), over 8 to 10 m best (1.84°), and beyond that worse again. The layer's 8 m baseline is where this terrain model is most accurate; no way of computing slope from it that we tried is better by more than 0.07° (the best: a plane fitted over 8 m, 1.84° against the layer's 1.90°), which is within the scatter of 178 stops. `validate.py` repeats the comparison whenever the 1 m terrain is in the cache (`slope_baseline_study` in `validation_report.json`).
 - **Credit:** USGS Astrogeology Science Center. The source includes ESA Mars Express HRSC data, which must be stated in the submission text.
 
 ### Optical image `optical.png`
@@ -140,13 +143,15 @@ Both are plots of NASA data drawn by a script, not AI-generated images. A line u
 
 ## 6. How accurate it is
 
-`validate.py` runs 54 checks and all pass. The ones that test the layers against each other:
+`validate.py` runs 56 checks and all pass (55 without the 1 m terrain in `cache/`). The ones that test the layers against each other:
 
 | What was checked | Result |
 |---|---|
 | Terrain elevation versus the elevation the rover recorded | Difference −0.17 m on average, standard deviation 0.24 m, at 178 stops |
 | Whether the terrain is shifted sideways | Shifting the terrain by up to ±5 cells (20 m) never matches the rover elevations better than no shift |
-| Terrain slope versus rover tilt | Median slope where the rover stood 8.8°, median rover tilt 9.1° |
+| Terrain slope versus rover tilt | Median slope where the rover stood 8.8°, median rover tilt 9.1°. Stop by stop: mean absolute error 1.90°, correlation 0.82 |
+| Whether a finer slope would be more accurate | No. Slope fitted over 2, 3, 4, 6, 8, 10 and 14 m of the 1 m terrain at the rover's exact place is off by 2.22°, 2.20°, 2.03°, 1.89°, 1.84°, 1.85° and 1.96°: the 8 m of the layer is at the best of it |
+| The relief on the palm map versus the slope layer | The mesh has a vertex every 8 m (257 per side). Its faces are tilted 1.5° off the slope layer on average; with the earlier mesh of 129 per side it was 2.4°. It is lit with the terrain's own normals (the same 8 m difference the slope layer uses): over every cell the light shows the slope layer to within 1.2° on average, against 1.6° with normals worked out from the mesh (`web/src/map/terrain.test.js`) |
 | Optical image versus terrain | Shading computed from the terrain matches the optical image best within 1 cell (4 m). The correlation is only 0.29, so we can say no more than "not off by much more than 4 m" |
 | Format | Grid length, empty cells, min/max, image size, source addresses and coordinates all match INTERFACES |
 
