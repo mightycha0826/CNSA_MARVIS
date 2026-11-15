@@ -1,12 +1,12 @@
 [Desktop Entry]
 Type=Application
-Name=Start MARVIS
+Name=Start Project Marvis
 Comment=Start everything after the Jetson was switched on: hotspot, hub, monitor page, headset
 # %k is the path of this file, so the script is found next to it wherever the project folder is.
 # Started without that path, it says so instead of guessing where the script is.
 # GNOME Files opens this file as text instead of running it: run
 # jetson/tools/start_all.sh --install-shortcut once, then use the icon on the desktop.
-Exec=sh -c "s=\\"\\$(dirname \\"\\$1\\")/jetson/tools/start_all.sh\\"; if [ -n \\"\\$1\\" ] && [ -x \\"\\$s\\" ]; then exec \\"\\$s\\" --pause; fi; echo 'Start MARVIS: jetson/tools/start_all.sh was not found next to this launcher.'; echo 'Run jetson/tools/start_all.sh --install-shortcut from the project folder, or start that script itself.'; echo 'Press Enter to close.'; read _" sh %k
+Exec=sh -c "s=\\"\\$(dirname \\"\\$1\\")/jetson/tools/start_all.sh\\"; if [ -n \\"\\$1\\" ] && [ -x \\"\\$s\\" ]; then exec \\"\\$s\\" --pause; fi; echo 'Start Project Marvis: jetson/tools/start_all.sh was not found next to this launcher.'; echo 'Run jetson/tools/start_all.sh --install-shortcut from the project folder, or start that script itself.'; echo 'Press Enter to close.'; read _" sh %k
 Terminal=true
 Icon=applications-science
 Categories=Utility;

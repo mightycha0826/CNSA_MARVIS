@@ -106,7 +106,7 @@ Received TTS is saved as `tts_out_<n>.wav`. Use `--url wss://10.42.0.1:8443/ws` 
 
 ## One click start
 
-After the Jetson was switched on, double-click **Start MARVIS** on the desktop (or pick it in the app list). It brings up the hotspot if it is down, starts the hub (stopping one that runs), opens the monitor page, opens the app in the headset's browser when the headset is reachable over adb, and says in its window when the headset connects and when it is in AR. Run again at any time: it restarts the hub and leaves the rest alone.
+After the Jetson was switched on, double-click **Start Project Marvis** on the desktop (or pick it in the app list). It brings up the hotspot if it is down, starts the hub (stopping one that runs), opens the monitor page, opens the app in the headset's browser when the headset is reachable over adb, and says in its window when the headset connects and when it is in AR. Run again at any time: it restarts the hub and leaves the rest alone.
 
 ```bash
 tools/start_all.sh                     # the same from a terminal
@@ -115,7 +115,7 @@ tools/start_all.sh --stop              # stop the hub
 tools/start_all.sh --install-shortcut  # put the icon on the desktop and in the app list (once per machine)
 ```
 
-The launcher also lies in the project folder (`Start MARVIS.desktop`). GNOME Files opens such a file as text instead of running it, which is why the icon on the desktop exists. Nothing in it uses sudo. On the headset one press is still needed: **Field map** or **Mars map** (a browser may only start AR from the wearer's own press).
+The launcher also lies in the project folder (`Start Project Marvis.desktop`). GNOME Files opens such a file as text instead of running it, which is why the icon on the desktop exists. Nothing in it uses sudo. On the headset one press is still needed: **Field map** or **Mars map** (a browser may only start AR from the wearer's own press).
 
 The hub started this way runs detached from the window and without `--dev` (`tools/start_all.sh --dev` adds it); its output is added to `logs/hub.log` and its pid is in `logs/hub.pid`. If the systemd service below is active, the hub is left to it. A missing `web/dist` or certificate is made, one that is there is never rebuilt. Whether the app is in AR is only known while a monitor page is open, because only then does the app send pictures. `tools/start_all.sh --help` lists the other options (`--no-browser`, `--no-wait`) and the environment variables for other ports, more hub options and another log folder.
 

@@ -163,8 +163,8 @@ When the wearer walks out of the Quest's boundary, the headset pauses the app an
 
 ## 6. Demo day checklist
 
-- [ ] Powering on the Jetson brings up the `MARSWALK` hotspot by itself (the **Start MARVIS** icon brings it up if it is not)
-- [ ] One double-click on **Start MARVIS** on the Jetson's desktop starts the hub, the monitor page and the wait for the headset (`jetson/tools/start_all.sh`, [README](README.md#one-click-start)); or the hub starts by itself as a systemd service (`jetson/marswalk-hub.service`)
+- [ ] Powering on the Jetson brings up the `MARSWALK` hotspot by itself (the **Start Project Marvis** icon brings it up if it is not)
+- [ ] One double-click on **Start Project Marvis** on the Jetson's desktop starts the hub, the monitor page and the wait for the headset (`jetson/tools/start_all.sh`, [README](README.md#one-click-start)); or the hub starts by itself as a systemd service (`jetson/marswalk-hub.service`)
 - [ ] The headset joins `MARSWALK` by itself (turn off auto-connect for other networks)
 - [ ] `https://10.42.0.1:8443/` is bookmarked in the headset browser
 - [ ] The certificate warning is already accepted (do not clear browser data after the rehearsal)
