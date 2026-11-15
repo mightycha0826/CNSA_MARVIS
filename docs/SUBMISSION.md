@@ -31,13 +31,13 @@ The text below the line has no `[TODO]` marks left. It describes the project **a
 
 | Part | Slot | State |
 |---|---|---|
-| NASA data layers, checks, figures | C | Built. 54 checks pass |
+| NASA data layers, checks, figures | C | Built. 56 checks pass |
 | Skeleton, event bus, loader, mock mode, radiation alert | B | Built |
 | HUD: status panel, alerts, layer tabs and legend, command menu operated by pointing and pinching | B, F | Built. 11 tests on the pointer pass |
 | Palm map with four layers, Curiosity's path, waypoints | D | Built |
 | Route planner on the slope layer, return to base on a critical alert | D | Built. 18 tests pass. The route is drawn on the map |
 | Wearer's position on the map from head tracking | B | Built |
-| Field obstacle scan from the headset's room model (`web/src/scan/`) | A | Built. Uses the room geometry the Quest 3 stores. Live depth is laid over it in field mode: written and tested off the headset, **not yet checked on the headset** |
+| Field obstacle scan (`web/src/scan/`) | A | Built. It uses the room geometry the Quest 3 stores where there is one, with the headset's live depth image laid over it. **On our headset no room geometry was available in any session, so the field map was built from live depth alone**, which runs there (2.5 m around the wearer at about three reads a second in the sessions run). The code now reads 4 m at five reads a second: that range and rate are **not yet checked on the headset** |
 | Field map mode: 1 : 1 relief map, scanned structure standing on it, arrows on the floor (`web/src/field/`) | A, B | Built. 6 tests on its path planner pass |
 | Suit hub, temperature alerts, voice assistant, firmware | E | Built. Voice measured with synthetic speech only. The temperature sensor is wired and read by the hub; warming it by hand raises the alerts |
 | Destination photo on the HUD | F | **Not built**. The photos are ready in `pov.json` |
@@ -106,13 +106,13 @@ A Python pipeline downloads the NASA data, cuts every source to the same map are
 
 The route planner works in real map meters on the terrain grid. Each cell costs its length times (1 + (slope / 15°)²); cells steeper than 20° are closed. It precomputes the cheapest way to each destination from every cell, so a new request or a change in the map is answered quickly, and it runs in a background worker so the display does not stall.
 
-The field map takes its obstacles from the model of the surroundings that the headset already keeps, read through WebXR mesh and plane detection. Every surface between 0.15 m and 1.9 m above the ground blocks the 10 cm cell under it; surfaces near the ground mark the cell as clear. A second, small planner finds the way back to the marked target around those cells. In our demo the surroundings are a room, so to the map it is as if a structure had appeared on Mars; on Mars the same step would add the rocks and ledges that orbital data cannot show.
+The field map takes its obstacles from two sources on the same 10 cm cells. One is the model of the surroundings that the headset already keeps, read through WebXR mesh and plane detection: every surface between 0.15 m and 1.9 m above the ground blocks the cell under it; surfaces near the ground mark the cell as clear. The other is the headset's live depth image, read several times a second and laid over the same cells. In the sessions we ran, the headset had no stored model of the room, so the map came from the live depth image alone. A second, small planner finds the way back to the marked target around those cells. In our demo the surroundings are a room, so to the map it is as if a structure had appeared on Mars; on Mars the same step would add the rocks and ledges that orbital data cannot show.
 
 Everything outside the headset runs on an NVIDIA Jetson, standing in for the suit's computer. It serves the app to the headset over HTTPS, reads an Arduino temperature sensor (standing in for a suit sensor) once a second, decides when an alert starts and clears, and handles voice. Voice activity detection (Silero VAD), speech recognition (SenseVoice) and speech synthesis (Supertonic 3) all run on the Jetson's CPU through sherpa-onnx. A recognized sentence is matched to one of a fixed set of commands by a table of phrases the team wrote, not by a language model, so the assistant only does what is on the list.
 
 ### What has been tested
 
-- The data: 54 automated checks, including the cross-checks against Curiosity's record described under "NASA Data". Rebuilding all data files from the NASA sources gives byte-identical results on the same system, and the same content on a second one (Linux on ARM), where the largest difference was 0.0000076° in the slope layer.
+- The data: 56 automated checks, including the cross-checks against Curiosity's record described under "NASA Data". Rebuilding all data files from the NASA sources gives byte-identical results on the same system, and the same content on a second one (Linux on ARM), where the largest difference was 0.0000076° in the slope layer.
 - The route planner: 18 automated tests on the real terrain.
 - The field map's planner: 6 automated tests on synthetic rooms (around a wall, sealed off, target next to a wall).
 - The hand pointer for the menus: 11 automated tests with a simulated hand (aiming, one press per pinch, a hand that twitches as it pinches).
@@ -123,7 +123,7 @@ Everything outside the headset runs on an NVIDIA Jetson, standing in for the sui
 
 ### Limits of the field map
 
-- It relies on the model of the surroundings the headset stored when the space was set up. The code that lays the headset's live depth image over it, so that something put down afterwards shows up within a few seconds, is written and passes its tests, but we have not yet checked it on the headset.
+- Where the headset has stored a model of the surroundings the map uses it; in our sessions it had none, and the map was built from the live depth image alone, which reaches a few metres around the wearer (2.5 m in the sessions run; the code has since been set to 4 m and to read more often, which is written and passes its tests but is not yet checked on the headset).
 - It shows that something is in the way, not what it is.
 - The scan is laid over the NASA map at an assumed position (base). We do not locate the astronaut on Mars from the scan.
 
@@ -187,7 +187,7 @@ This gives five kinds of data from the challenge's list (topographic, optical, t
   - The radiation and weather files come from two instruments with separate archives, so we checked that they share a clock: looked up through spacecraft time, their local solar times agree to within 10 seconds.
   - The weather record behaves as expected: temperature peaks in the early afternoon, and radiation rises when air pressure falls (correlation −0.74), as it should when there is less atmosphere overhead.
 - **Checking the route against a real one:** the app's planner routes 390 m from base to the survey site and never crosses ground steeper than 14.9°. As an independent check, our data scripts compute a route with the same rule; it comes to the same 390 m and stays on average 16 m (at most 43 m) from the path Curiosity actually drove between the same two points. An astronaut's planned route and a rover's real route pick the same corridor. (Figure: `docs/figures/route.png`.)
-- **Reproducibility:** one script rebuilds every data file from the NASA sources, and a second script runs 54 checks on the result. Rebuilding from an empty cache gives byte-identical files.
+- **Reproducibility:** one script rebuilds every data file from the NASA sources, and a second script runs 56 checks on the result. Rebuilding from an empty cache gives byte-identical files.
 
 **Limits we want to be clear about**
 
