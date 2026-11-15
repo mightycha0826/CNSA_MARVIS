@@ -336,7 +336,7 @@ class MirrorTuneTest(unittest.TestCase):
 class DictationTest(unittest.TestCase):
     """After voice.dictate the next words of that headset come back as text, not as a command."""
 
-    def run_utterance(self, heard, conn):
+    def run_utterance(self, heard, client):
         import asyncio
         import json
         from marswalk.hub import Hub
@@ -366,27 +366,33 @@ class DictationTest(unittest.TestCase):
 
         stub, ws = Stub(), Socket()
         ws.sent, stub.commands = [], []
-        asyncio.run(Hub.handle_utterance(stub, b"", 16000, ws, conn))
+        client.ws = ws
+        asyncio.run(Hub.handle_utterance(stub, b"", 16000, client))
         return ws.sent, stub.commands
+
+    @staticmethod
+    def client(dictate):
+        from marswalk.hub import Client
+        return Client(ws=None, peer="test", dictate=dictate)
 
     def test_words_after_a_request_are_sent_back_and_are_no_command(self):
         import time
-        conn = {"dictate": {"id": 7, "until": time.monotonic() + 5}}
-        sent, commands = self.run_utterance("Rock sample by the door.", conn)
+        client = self.client({"id": 7, "until": time.monotonic() + 5})
+        sent, commands = self.run_utterance("Rock sample by the door.", client)
         self.assertEqual(commands, [])
         self.assertEqual(sent[0]["type"], "voice.dictation")
         self.assertEqual(sent[0]["payload"], {"id": 7, "text": "Rock sample by the door."})
-        self.assertIsNone(conn["dictate"])           # one utterance only
-        sent, commands = self.run_utterance("navigate", conn)
+        self.assertIsNone(client.dictate)            # one utterance only
+        sent, commands = self.run_utterance("navigate", client)
         self.assertEqual((sent, commands), ([], ["navigate"]))
 
     def test_a_noise_keeps_it_listening_and_a_late_word_is_a_command_again(self):
         import time
-        conn = {"dictate": {"id": 1, "until": time.monotonic() + 5}}
-        self.assertEqual(self.run_utterance("", conn), ([], []))
-        self.assertIsNotNone(conn["dictate"])
-        conn = {"dictate": {"id": 1, "until": time.monotonic() - 1}}
-        self.assertEqual(self.run_utterance("stop", conn), ([], ["stop"]))
+        client = self.client({"id": 1, "until": time.monotonic() + 5})
+        self.assertEqual(self.run_utterance("", client), ([], []))
+        self.assertIsNotNone(client.dictate)
+        client = self.client({"id": 1, "until": time.monotonic() - 1})
+        self.assertEqual(self.run_utterance("stop", client), ([], ["stop"]))
 
 
 class NewPhrasesTest(unittest.TestCase):
