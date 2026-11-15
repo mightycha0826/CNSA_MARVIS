@@ -20,7 +20,7 @@ export const OBSTACLE = 1;
 export const UNKNOWN = 255;
 
 /**
- * cfg: thingMinM, headM, floorNoiseM, dropMinM (0 or absent: drops are not marked), minPoints, setScans, clearScans, forgetScans,
+ * cfg: thingMinM, headM, floorNoiseM, floorLowM, dropMinM (0 or absent: drops are not marked), minPoints, setScans, clearScans, forgetScans,
  * farM and farSetScans (absent: every cell takes setScans), and for
  * settling: settleScans, resettleScans, giveUpScans, leaveM, vantageM, depthRangeM, bodyM, viewHalfDeg (SCAN in index.js).
  * commitAll: commit() looks at every cell every time, as it did before 2026-11-15 (the test that compares the two).
@@ -58,6 +58,7 @@ export function createGrid(cols, rows, cellM, originXZ, cfg) {
   let settledCount = 0;
   const cosHalf = Math.cos(((cfg.viewHalfDeg ?? 40) * Math.PI) / 180);
   const dropBelow = cfg.dropMinM > 0 ? -cfg.dropMinM : -Infinity; // ground lower than this is a drop
+  const groundLow = -(cfg.floorLowM ?? cfg.floorNoiseM); // ground down to here is ground to walk on
 
   // What a commit has to look at. A cell that got no point in this read, has no sighting that
   // waits for its next one, and lies out of the view's reach is left exactly as it is by
@@ -112,8 +113,10 @@ export function createGrid(cols, rows, cellM, originXZ, cfg) {
       if (settled[i]) return; // read often enough: nothing more to learn here for now
       // A thing standing here, or ground far enough below the floor that stepping here is a fall.
       if ((y > cfg.thingMinM && y < cfg.headM) || y < dropBelow) obstacle[i]++;
-      // Between floorNoiseM and thingMinM (and as far below the floor) a noisy depth point could be either: it counts as neither.
-      else if (Math.abs(y) <= cfg.floorNoiseM) floor[i] += weight;
+      // Ground: up to floorNoiseM above the floor and floorLowM below it (lower ground that is
+      // walked down to; without floorLowM, as far below as above). Between that and a thing, or
+      // a drop, a noisy depth point could be either: it counts as neither.
+      else if (y <= cfg.floorNoiseM && y >= groundLow) floor[i] += weight;
       else return;
       if (col < touched[0]) touched[0] = col;
       if (col > touched[1]) touched[1] = col;
