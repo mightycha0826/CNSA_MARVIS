@@ -19,7 +19,8 @@
 //   marks.js       the picked place, the waypoints and their names, the card over a pick
 //   status.js      the readings: their history, and which tiles are shown
 //   dash.js        the tiles that move (layout.js: where to; importance.js: which matter most)
-//   suit.js        the vitals hologram over the right palm (suit-limits.js: what is out of range)
+//   suit.js        the vitals hologram over the right palm (suit-limits.js: what is out of range;
+//                  spin.js: how the figure turns, and how the hand's movement spins it)
 //   rescue.js      the emergency (SOS) button
 //   index.js       takes the events, keeps the state, places the panels, runs the frame
 //
