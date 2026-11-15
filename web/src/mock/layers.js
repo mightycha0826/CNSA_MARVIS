@@ -1,6 +1,6 @@
-// 가짜 데이터 레이어 (?mock=1 또는 ?mock=data).
-// C의 실제 파일(web/public/data/)과 형식이 같다 (INTERFACES 2장).
-// 지형은 완만한 언덕이고, 화성 데이터가 아니다. 화면이나 발표에 실데이터처럼 쓰지 않는다.
+// Fake data layers (?mock=1 or ?mock=data).
+// Same format as C's real files (web/public/data/) (INTERFACES section 2).
+// The terrain is gentle hills, not Mars data. Do not use it on screen or in a talk as if it were real data.
 
 const COLS = 512;
 const ROWS = 512;
@@ -12,12 +12,12 @@ function buildTopo() {
     for (let col = 0; col < COLS; col++) {
       const x = col / COLS;
       const y = row / ROWS;
-      // 남서(0,0)에서 북동으로 서서히 오르는 비탈 + 언덕 몇 개 + 가운데를 지나는 얕은 골
+      // A slope rising gently from the south-west (0,0) to the north-east + a few hills + a shallow gully through the middle
       let h = -3760 + 90 * (0.6 * x + 0.4 * y);
       h += 18 * Math.sin(x * 6.3) * Math.cos(y * 4.9);
       h += 9 * Math.sin(x * 15.1 + 1.3) * Math.sin(y * 12.7);
-      h += 35 * Math.exp(-((x - 0.7) ** 2 + (y - 0.3) ** 2) / 0.012); // 가파른 봉우리
-      h -= 12 * Math.exp(-((x - y) ** 2) / 0.004); // 골
+      h += 35 * Math.exp(-((x - 0.7) ** 2 + (y - 0.3) ** 2) / 0.012); // a steep peak
+      h -= 12 * Math.exp(-((x - y) ** 2) / 0.004); // the gully
       topo[row * COLS + col] = h;
     }
   }
@@ -47,7 +47,7 @@ function range(arr) {
   return [Math.round(min * 100) / 100, Math.round(max * 100) / 100];
 }
 
-// 회색조 PNG를 만들어 blob 주소로 돌려준다. 위쪽이 북쪽(row가 큰 쪽)이다 (INTERFACES 2.3).
+// Makes a greyscale PNG and returns its blob URL. The top is north (the larger rows) (INTERFACES 2.3).
 async function grayImage(size, valueAt) {
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = size;
@@ -74,11 +74,11 @@ export async function buildMockData() {
   const sample = (arr, x, y) =>
     arr[Math.min(ROWS - 1, Math.floor(y * ROWS)) * COLS + Math.min(COLS - 1, Math.floor(x * COLS))];
 
-  // 이미지 레이어의 file 이름 → blob 주소. main.js가 ctx.assetUrl()에 연결한다.
+  // An image layer's file name → blob URL. main.js connects it to ctx.assetUrl().
   const assets = {
-    // 광학: 경사 음영 비슷한 회색조
+    // Optical: greyscale that looks like slope shading
     'optical.png': await grayImage(512, (x, y) => 150 - sample(slope, x, y) * 5 + 20 * Math.sin(x * 90) * Math.sin(y * 70)),
-    // 열: 81m/픽셀을 흉내 낸 거친 덩어리 (25×25칸)
+    // Thermal: coarse blocks that imitate 81 m/pixel (25×25 cells)
     'thermal.png': await grayImage(512, (x, y) => {
       const bx = Math.floor(x * 25) / 25;
       const by = Math.floor(y * 25) / 25;
@@ -91,27 +91,28 @@ export async function buildMockData() {
     mock: true,
     site: {
       name: 'MOCK — Gediz Vallis channel, Mount Sharp, Gale Crater',
-      scienceGoal: '황이 든 돌 조사',
+      scienceGoal: 'Survey sulfur-bearing rocks',
       lat: -4.78681191,
       lon: 137.4075342,
       bounds: { west: 137.39026, east: 137.42481, south: -4.80409, north: -4.76954 },
       geologicUnit: { code: 'Htu', name: 'Hesperian transition undivided unit', source: 'USGS SIM 3292' },
     },
     grid: { cols: COLS, rows: ROWS, cellSizeM: CELL_M },
+    // As in the real file: `label` is the short Korean name (shown by ?lang=ko), `labelEn` the English one.
     layers: [
-      { id: 'topo', kind: 'topographic', mission: 'MOCK', instrument: 'MOCK', file: 'topo.bin', format: 'float32', unit: 'm', min: tMin, max: tMax, label: '지형 높이 (가짜)', sourceUrl: MOCK_URL },
-      { id: 'slope', kind: 'derived', mission: 'MOCK', instrument: 'MOCK', file: 'slope.bin', format: 'float32', unit: 'deg', min: sMin, max: sMax, label: '경사도 (가짜)', sourceUrl: MOCK_URL },
-      { id: 'optical', kind: 'optical', mission: 'MOCK', instrument: 'MOCK', file: 'optical.png', format: 'image', label: '광학 영상 (가짜)', sourceUrl: MOCK_URL },
-      { id: 'thermal', kind: 'thermal', mission: 'MOCK', instrument: 'MOCK', file: 'thermal.png', format: 'image', label: '열 영상 (가짜)', sourceUrl: MOCK_URL },
+      { id: 'topo', kind: 'topographic', mission: 'MOCK', instrument: 'MOCK', file: 'topo.bin', format: 'float32', unit: 'm', min: tMin, max: tMax, label: '지형 높이 (가짜)', labelEn: 'Terrain elevation (mock)', sourceUrl: MOCK_URL },
+      { id: 'slope', kind: 'derived', mission: 'MOCK', instrument: 'MOCK', file: 'slope.bin', format: 'float32', unit: 'deg', min: sMin, max: sMax, label: '경사도 (가짜)', labelEn: 'Slope (mock)', sourceUrl: MOCK_URL },
+      { id: 'optical', kind: 'optical', mission: 'MOCK', instrument: 'MOCK', file: 'optical.png', format: 'image', label: '광학 영상 (가짜)', labelEn: 'Optical image (mock)', sourceUrl: MOCK_URL },
+      { id: 'thermal', kind: 'thermal', mission: 'MOCK', instrument: 'MOCK', file: 'thermal.png', format: 'image', label: '열 영상 (가짜)', labelEn: 'Thermal image (mock)', sourceUrl: MOCK_URL },
     ],
     waypoints: [
-      { id: 'base', label: '기지', cell: [0, 0] },
-      { id: 'site1', label: '황 암석 지대', cell: [256, 256] },
+      { id: 'base', label: '기지', labelEn: 'Base', cell: [0, 0] },
+      { id: 'site1', label: '황 암석 지대', labelEn: 'Sulfur stone field', cell: [256, 256] },
     ],
     demo: { regionCells: [246, 246, 266, 266], roomSizeM: [4, 4] },
   };
 
-  // 가짜 주행 경로: 남서쪽에서 기준점(256,256)까지 굽은 길
+  // Fake traverse: a winding path from the south-west to the reference point (256,256)
   const points = [];
   for (let i = 0; i <= 12; i++) {
     const t = i / 12;

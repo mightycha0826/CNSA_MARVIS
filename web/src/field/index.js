@@ -43,6 +43,7 @@
 
 import * as THREE from 'three';
 import { mode } from '../core/mode.js';
+import { params, numberOr } from '../core/params.js';
 import { makePalmState } from '../core/palm.js';
 import { makeBeam, makeCaption, writeCaption, placeCaption, floatOverPalm, fadeBeyondCircle, unfoldStep, popIn, popScale } from '../core/hologram.js';
 import { knownBeyondWindow } from '../scan/index.js';
@@ -53,17 +54,15 @@ import { planVia, PLAN } from './planner.js';
 import { createGuide, makeRibbon, GUIDE } from './guide.js';
 import { MARK, makeYou, makeTarget, makeWaypoint, makePin, setLabel, place } from '../core/markers.js';
 
-const q = new URLSearchParams(location.search);
-
 export const WALK = {
   /** Mars mode: one real metre moves the map marker at most this many metres. Without
    *  ?walkScale= the scale is set for each route so that it is routeRoomM of real walking
    *  (fitRoute): a 20 m route and a 390 m route are both a few steps across the room. */
-  marsScale: Number(q.get('walkScale')) || 100,
-  scaleFixed: q.has('walkScale'),
+  marsScale: numberOr('walkScale', 100),
+  scaleFixed: params.has('walkScale'),
   routeRoomM: 3,
   /** Which waypoint the wearer stands on when the session starts */
-  startAt: q.get('fieldAt') || 'base',
+  startAt: params.get('fieldAt') || 'base',
   emitMs: 200,
 };
 
@@ -180,7 +179,6 @@ let lastStatus = null;
 let simulated = null; // PC testing: { x, z, heading }
 
 const v = new THREE.Vector3();
-const dummy = new THREE.Object3D();
 
 // ---------- scene objects ----------
 // What moves on the map floats above it as objects of its own: the wearer's arrow, the target,
@@ -421,7 +419,6 @@ function updateRelief() {
 
 // Everything written about the field map: on the card around the map's cylinder, as on the Mars map.
 function writeFieldCaption() {
-  const stats = grid?.stats;
   const live = grid?.source === 'room-scan+depth';
   const source = !grid ? 'Waiting for the room scan' : grid.source ? `Room scan${live ? ' + live depth' : ''} · Quest 3` : 'Scan · simulated obstacle';
   let note = 'Point at the map and pinch: set a target or a waypoint there';

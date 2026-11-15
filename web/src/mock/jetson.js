@@ -1,6 +1,6 @@
-// 가짜 젯슨 (?mock=1 또는 ?mock=link).
-// 실제 젯슨이 보내는 것과 같은 봉투 메시지({ type, ts, payload }, INTERFACES 4장)를
-// 시간표대로 만들어 link.js에 넘긴다. link.js는 진짜와 가짜를 같은 코드로 처리한다.
+// Fake Jetson (?mock=1 or ?mock=link).
+// Makes the same envelope messages the real Jetson sends ({ type, ts, payload }, INTERFACES section 4)
+// by a timetable and hands them to link.js. link.js handles real and fake with the same code.
 //
 // 60 s timetable (then it starts over):
 //    4 s  "Thermal"     layer.show
@@ -25,15 +25,15 @@ export const MOCK_KEYS_HELP = 'Keys: N navigate · H base · S stop · L thermal
 
 function scriptedTemp(t) {
   if (t < 30) return 24.5;
-  if (t < 42) return 24.5 + ((t - 30) / 12) * 12; // 36.5까지
-  if (t < 55) return 36.5 - ((t - 42) / 13) * 12.5; // 24.0까지
+  if (t < 42) return 24.5 + ((t - 30) / 12) * 12; // up to 36.5
+  if (t < 55) return 36.5 - ((t - 42) / 13) * 12.5; // down to 24.0
   return 24.5;
 }
 
 /**
- * @param {(msg: {type: string, ts: number, payload: object}) => void} deliver 젯슨 → 헤드셋 메시지를 받을 함수
+ * @param {(msg: {type: string, ts: number, payload: object}) => void} deliver the function that takes the Jetson → headset messages
  * @param {{ speed?: number }} opts
- * @returns {() => void} 멈추는 함수
+ * @returns {() => void} a function that stops it
  */
 export function startMockJetson(deliver, { speed = 1 } = {}) {
   const send = (type, payload) => deliver({ type, ts: Date.now(), payload });
@@ -41,15 +41,15 @@ export function startMockJetson(deliver, { speed = 1 } = {}) {
 
   const t0 = performance.now();
   let lastT = 0;
-  let level = null; // 지금 걸려 있는 suit-temp 경보 등급
-  let spikeUntil = -1; // T 키로 올린 온도가 유지되는 시각(초)
+  let level = null; // level of the suit-temp alert that is up now
+  let spikeUntil = -1; // until when the temperature raised with the T key holds (s)
   let thermalOn = false;
 
   function tick() {
     const elapsed = ((performance.now() - t0) / 1000) * speed;
     const t = elapsed % CYCLE_S;
 
-    // 온도: 1초에 한 번 (INTERFACES 3장)
+    // Temperature: once a second (INTERFACES section 3)
     let temp = scriptedTemp(t) + (Math.random() - 0.5) * 0.2;
     if (elapsed < spikeUntil) temp = Math.max(temp, 36.5);
     temp = Math.round(temp * 10) / 10;
@@ -71,7 +71,7 @@ export function startMockJetson(deliver, { speed = 1 } = {}) {
       }
     }
 
-    // 음성 명령: 지난 틱과 이번 틱 사이에 걸린 것을 보낸다
+    // Voice commands: send those that fall between the last tick and this one
     for (const s of SCRIPT) {
       const crossed = lastT <= t ? s.at > lastT && s.at <= t : s.at > lastT || s.at <= t;
       if (crossed) say(s.intent, s.slots, s.text);

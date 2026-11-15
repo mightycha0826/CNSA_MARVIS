@@ -1,21 +1,20 @@
-// HUD 설정값. 크기·위치·주기를 고칠 때는 여기 숫자만 바꾼다.
-// 길이 단위 "도"는 목업(mockups/hud-mockup.html)의 d와 같다: 눈앞 distanceM 거리의 평면에서
-// distanceM × tan(1°) ≈ 17.5mm. 시야 가운데에서는 시야각 1도이고, 가장자리로 갈수록 조금 작아진다.
+// HUD settings. To change sizes, positions or periods, change only the numbers here.
+// The length unit "deg" is the d of the mockup (mockups/hud-mockup.html): on the plane distanceM in front of the eyes,
+// distanceM × tan(1°) ≈ 17.5 mm. In the middle of the view that is 1 degree of visual angle; towards the edges a little less.
 
 import { PALM } from '../core/palm.js';
-
-const q = new URLSearchParams(location.search);
+import { params, isOff } from '../core/params.js';
 
 export const HUD = {
-  /** 글자 언어: en(목업 기준) 또는 ko. 주소에 ?lang=ko */
-  lang: q.get('lang') === 'ko' ? 'ko' : 'en',
-  /** HUD 평면까지의 거리 (m) */
+  /** Text language: en (as in the mockup) or ko. ?lang=ko in the address */
+  lang: params.get('lang') === 'ko' ? 'ko' : 'en',
+  /** Distance to the HUD plane (m) */
   distanceM: 1.0,
-  /** 캔버스 해상도 (픽셀/도). Quest 3는 약 25 */
+  /** Canvas resolution (pixels/deg). The Quest 3 has about 25 */
   pxPerDeg: 28,
-  /** 0이면 머리에 고정. 0보다 크면 그 속도(1/초)로 천천히 따라온다. 비상 테두리는 항상 고정 */
+  /** 0: fixed to the head. Above 0: follows slowly at that rate (1/s). The emergency border is always fixed */
   followRate: 0,
-  /** 목업의 화면 크기 (도). 아래 위치는 이 화면의 왼쪽 위 기준 */
+  /** Size of the mockup's screen (deg). The positions below are measured from its top left */
   stage: { wDeg: 80.26, hDeg: 50.16 },
   /** What looks centred when it is laid out sits a little high in the Quest 3: the whole HUD
    *  (tiles, toast, alert card) is lowered by this much (deg). */
@@ -70,15 +69,15 @@ export const HUD = {
    *  pulse, kept low so the room and the map stay readable through it; `centre` is how much of
    *  that reaches the middle of the view (the edges get all of it). It is dark between flashes
    *  and after "Confirm". `?wash=0` turns it off. */
-  wash: { enabled: q.get('wash') !== '0', warnPeak: 0.13, criticalPeak: 0.18, centre: 0.6 },
+  wash: { enabled: !isOff('wash'), warnPeak: 0.13, criticalPeak: 0.18, centre: 0.6 },
   /** Alarm beep before each flash: one soft 880 Hz tone for warn, two sharp 2350 Hz pulses for
    *  critical (mockup). `?sound=0` turns it off. */
-  alarm: { enabled: q.get('sound') !== '0', warnHz: 880, criticalHz: 2350, gain: 0.2 },
-  /** 레이어 탭 + 범례 */
+  alarm: { enabled: !isOff('sound'), warnHz: 880, criticalHz: 2350, gain: 0.2 },
+  /** Layer tabs + legend */
   layers: {
     wDeg: 14.5,
     hDeg: 21,
-    /** 손 추적이 없을 때(PC 포함) 화면에 고정하는 자리 */
+    /** Where it is fixed on the screen when there is no hand tracking (the PC included) */
     // Bottom left, under the left column of readings and left of the alert card (PC screen, controllers).
     fixedLeftDeg: 4,
     fixedBottomDeg: 1,
@@ -95,8 +94,8 @@ export const HUD = {
     /** (see `pointer` below for how the menus are pressed) */
     /** How long a pressed tab stays lit (ms) */
     pressFlashMs: 220,
-    /** 손등 방향(손목 관절의 +Y)의 위쪽 성분이 이 값보다 작으면 손바닥이 위를 본다고 본다.
-     *  메뉴는 지도 옆에 뜨므로 지도와 같은 값이어야 한다: core/palm.js 의 PALM.upDot 을 그대로 쓴다 */
+    /** The palm counts as facing up when the upward part of the back-of-hand direction (+Y of the wrist joint) is below this.
+     *  The menu comes up beside the map, so it must be the map's value: PALM.upDot of core/palm.js is used as it is */
     palmUpDot: PALM.upDot,
   },
   /** The readings the status card can show besides the pinned ones, and how much each matters
@@ -125,7 +124,7 @@ export const HUD = {
     hands: ['right'],
     /** ?ray=own builds the hand's ray here (shoulder through the index knuckle) instead of
      *  using the pointer pose the headset supplies. Try it if the supplied ray feels off. */
-    ownRay: q.get('ray') === 'own',
+    ownRay: params.get('ray') === 'own',
     shoulderDownM: 0.2,
     shoulderSideM: 0.16,
     /** When pointing at the palm map, which lies flat, the ray is tipped down by this much (deg):

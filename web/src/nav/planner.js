@@ -125,7 +125,7 @@ export class Search {
         if (!dc && !dr) continue;
         const c = up[0] + dc, r = up[1] + dr;
         if (c < 0 || c >= cols || r < 0 || r >= rows) continue;
-        const v = r * cols + c, vp = [c, r];
+        const v = r * cols + c;
         if (v === this.s || !Number.isFinite(this.field.costs[v])) continue;
         // For neighbouring cell centres, the edge crosses each cell over
         // exactly half its length. Diagonal corner clearance is still checked.

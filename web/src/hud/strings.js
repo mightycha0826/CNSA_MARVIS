@@ -1,5 +1,5 @@
-// HUD에 나오는 글자. 포인트 디자인 시스템 규칙: 제목·데이터·상태 낱말만, 설명 문장은 쓰지 않는다.
-// en은 목업(mockups/hud-mockup.html)의 문구 그대로다.
+// The text on the HUD. Rule of the Point design system: titles, data and status words only, no explaining sentences.
+// en is the wording of the mockup (mockups/hud-mockup.html), as it is.
 
 export const STRINGS = {
   en: {
@@ -71,7 +71,7 @@ export const STRINGS = {
     high: '높음',
     relative: '상대 밝기',
     keys: ['■ 기지', '◆ 조사 지점', '▲ 나'],
-    layers: {}, // layerset.json의 label을 그대로 쓴다
+    layers: {}, // the label of layerset.json is used as it is
     waypoints: {},
   },
 };

@@ -13,11 +13,10 @@
 import { HUD } from './config.js';
 import { drawReading } from './draw.js';
 import { arrange, spring, stretch } from './layout.js';
+import { UNIT, makePanel } from './panel.js';
 
-/**
- * @param tools { makePanel, parent (the group the HUD cards hang in), unitM (metres per degree at the HUD's distance) }
- */
-export function createDash({ makePanel, parent, unitM }) {
+/** @param parent  the group the HUD cards hang in */
+export function createDash({ parent }) {
   const K = HUD.dash;
   const tiles = new Map(); // id -> tile
   let wanted = new Map(); // id -> where layout.js puts it (only the readings on show)
@@ -84,7 +83,7 @@ export function createDash({ makePanel, parent, unitM }) {
         mesh.visible = tile.shown && mat.opacity > 0.01;
         if (!mesh.visible) continue;
         const [sx, sy] = stretch(tile.x.v, tile.y.v, K.stretch, K.stretchFullDegS);
-        mesh.position.set(tile.x.x * unitM, (HUD.stage.hDeg / 2 - tile.y.x) * unitM, -HUD.distanceM);
+        mesh.position.set(tile.x.x * UNIT, (HUD.stage.hDeg / 2 - tile.y.x) * UNIT, -HUD.distanceM);
         mesh.scale.set(tile.scale.x * sx, tile.scale.x * sy, 1);
       }
     },

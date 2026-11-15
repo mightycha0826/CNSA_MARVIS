@@ -1,9 +1,9 @@
-// 가짜 현장 장애물 (?mock=1 또는 ?mock=hazard).
-// `hazard:update`(INTERFACES 3장)를 1초에 한 번 보낸다. 방 좌표 기준 4m × 4m, 칸 0.1m.
-// 20초 주기로 방 한쪽(x≈0.5, z≈-0.6)에 의자 크기(0.5m) 장애물이 12초 동안 놓였다 사라진다.
-// 격자 가장자리 두 줄은 "아직 모름"(255)이다.
+// Fake field obstacles (?mock=1 or ?mock=hazard).
+// Sends `hazard:update` (INTERFACES section 3) once a second. 4 m × 4 m in room coordinates, 0.1 m cells.
+// Every 20 seconds a chair-sized (0.5 m) obstacle stands on one side of the room (x≈0.5, z≈-0.6) for 12 seconds, then goes.
+// The outermost two rows and columns of the grid are "not seen yet" (255).
 //
-// scan/index.js가 mock.hazard(?mock=1 또는 ?mock=hazard)일 때 실제 스캔 대신 이 함수를 부른다.
+// With mock.hazard (?mock=1 or ?mock=hazard), scan/index.js calls this function instead of the real scan.
 
 const COLS = 40;
 const ROWS = 40;
@@ -13,7 +13,7 @@ const ORIGIN = [-2.0, -2.0];
 /**
  * @param {{ emit: Function }} bus
  * @param {{ speed?: number }} opts
- * @returns {() => void} 멈추는 함수
+ * @returns {() => void} a function that stops it
  */
 export function startMockHazard(bus, { speed = 1 } = {}) {
   const t0 = performance.now();
@@ -36,6 +36,6 @@ export function startMockHazard(bus, { speed = 1 } = {}) {
     bus.emit('hazard:update', { originXZ: [...ORIGIN], cellSizeM: CELL_M, cols: COLS, rows: ROWS, cells, ts: Date.now() });
   }
   tick();
-  const timer = setInterval(tick, Math.max(500, 1000 / speed)); // 초당 2회 이하
+  const timer = setInterval(tick, Math.max(500, 1000 / speed)); // at most twice a second
   return () => clearInterval(timer);
 }

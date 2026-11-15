@@ -46,6 +46,7 @@
 // ctx and frame: see the comment in map/index.js.
 
 import { mode } from '../core/mode.js';
+import { isOff } from '../core/params.js';
 import { startMockHazard } from '../mock/hazard.js';
 import { createRoom } from './room.js';
 import { createGrid, mergeLayers, viewOf } from './grid.js';
@@ -74,12 +75,12 @@ export const SCAN = {
   // Ground this far below the floor is a drop, and is marked like an obstacle: a stair going down, a kerb, a pit.
   // 0.3 m: a single low step (under 0.3 m) can be walked down; depth error puts a floor point 7 cm low at most.
   // ?drops=0 turns it off (a mirror-like floor may read as deeper than it is).
-  dropMinM: new URLSearchParams(globalThis.location?.search ?? '').get('drops') === '0' ? 0 : 0.3,
+  dropMinM: isOff('drops') ? 0 : 0.3,
   minPoints: 3, // samples needed in a cell before a read says anything about it
   setScans: 2, // reads in a row that must see an obstacle before it counts (2 = 1 s): not someone walking past
   clearScans: 3, // floor-only reads before a live obstacle is cleared (3 = 1.5 s)
   // Settling (grid.js): what has been read often enough is left alone, so the reads go to what is new.
-  settleScans: new URLSearchParams(globalThis.location?.search ?? '').get('settle') === '0' ? 0 : 6, // same answer this many reads in a row (6 = 2 s): settled. ?settle=0 turns settling off
+  settleScans: isOff('settle') ? 0 : 6, // same answer this many reads in a row (6 = 2 s): settled. ?settle=0 turns settling off
   refreshS: 1.5, // settled ground in view is looked at again this long after it settled (0 = only after the wearer has been away)
   resettleScans: 2, // and settles again after this many reads that say what it already is: a chair put down or taken away shows in 2 to 3 s
   giveUpScans: 12, // in view this many reads without an answer (behind something): settled too
@@ -92,7 +93,7 @@ export const SCAN = {
 
   // The map on the Jetson.
   storeMs: 2000, // a changed map goes to the hub at most this often
-  remember: new URLSearchParams(globalThis.location?.search ?? '').get('remember') !== '0', // take the stored map back
+  remember: !isOff('remember'), // take the stored map back
 
   // Highlight on the floor (overlay.js), [r, g, b] 0-255.
   glowRGB: [255, 48, 48], // the fill
