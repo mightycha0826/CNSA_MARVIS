@@ -1,7 +1,7 @@
 // node --test src/hud/spin.test.js
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createSpin } from './spin.js';
+import { createSpin, createHandWatch } from './spin.js';
 
 // The numbers the app uses (HUD.suit.turnS and HUD.suit.spin in config.js).
 const K = { turnS: 14, perM: 30, returnS: 1.5, maxRadS: 10, deadMps: 0.05, smoothS: 0.08, maxMps: 2.5 };
@@ -153,13 +153,148 @@ test('it turns the same whatever the frame rate, and a long frame does not throw
   assert.ok(Math.abs(spin.state().rate - USUAL) < 0.01);
 });
 
-test('the angle stays within one turn, and rest() gives back the usual turn without turning the figure', () => {
+test('the angle stays within one turn', () => {
   const spin = createSpin(K);
   for (let k = 0; k < 2000; k++) {
     const angle = spin.step(1 / HZ, k % 300 < 100 ? -2 : 2);
     assert.ok(angle >= 0 && angle < Math.PI * 2);
   }
-  const { angle } = spin.state();
-  spin.rest();
-  assert.deepEqual(spin.state(), { angle, rate: USUAL, usual: USUAL, push: 0 });
+  assert.deepEqual(Object.keys(spin.state()), ['angle', 'rate', 'usual', 'handMps']);
+});
+
+// ---- the hand's own movement, told apart from the wearer's ----
+
+/**
+ * A wearer for `seconds` at 72 Hz. `at(t)` gives { head: [x, z], yaw (rad, 0 = facing -z, positive
+ * to the right), hand: [right, ahead] of the head in the body's own frame, bodyYaw (rad, the way
+ * the body and so the held-out hand is turned; the head's yaw when left out) }.
+ * Returns the hand's own sideways speeds the watch reported (m/s).
+ */
+function watchWearer(seconds, at) {
+  const watch = createHandWatch();
+  const out = [];
+  for (let k = 0; k <= seconds * HZ; k++) {
+    const { head, yaw, hand, bodyYaw = yaw } = at(k / HZ);
+    const right = [Math.cos(yaw), Math.sin(yaw)]; // facing (sin yaw, -cos yaw): its right
+    const ahead = [Math.sin(bodyYaw), -Math.cos(bodyYaw)];
+    const side = [Math.cos(bodyYaw), Math.sin(bodyYaw)];
+    const palm = [head[0] + side[0] * hand[0] + ahead[0] * hand[1], head[1] + side[1] * hand[0] + ahead[1] * hand[1]];
+    const mps = watch.measure(palm[0], palm[1], head[0], head[1], right[0], right[1], 1 / HZ);
+    if (k === 0) assert.equal(mps, null, 'nothing to compare the first frame with');
+    else out.push(mps);
+  }
+  return out;
+}
+const most = (a) => Math.max(...a.map(Math.abs));
+const HELD = [0.15, 0.4]; // the right palm: 15 cm to the right of the head, 40 cm ahead
+
+test('walking, stepping aside and turning the head do not count as the hand moving', () => {
+  // Walking at 1.2 m/s, looking 10 and 20 degrees to the right of the way walked (the figure floats right of the middle).
+  for (const look of [10, 20]) {
+    const yaw = (look * Math.PI) / 180;
+    assert.ok(most(watchWearer(3, (t) => ({ head: [0, -1.2 * t], yaw, bodyYaw: 0, hand: HELD }))) < 1e-9, `walking, head ${look} degrees aside`);
+  }
+  // A walk with the body swaying 2.5 cm from side to side, twice a second.
+  assert.ok(most(watchWearer(3, (t) => ({ head: [0.025 * Math.sin(t * 4 * Math.PI), -1.2 * t], yaw: 0, hand: HELD }))) < 1e-9, 'body sway');
+  // A step of 20 cm to the side.
+  assert.ok(most(watchWearer(1, (t) => ({ head: [0.2 * Math.min(1, t / 0.5), 0], yaw: 0, hand: HELD }))) < 1e-9, 'a step aside');
+  // Turning only the head (about the axis it turns on), the hand still: it slides across the view, and that is all.
+  assert.ok(most(watchWearer(1.5, (t) => ({ head: [0, 0], yaw: 0.6 * Math.sin(t * 3), bodyYaw: 0, hand: HELD }))) < 1e-9, 'turning the head');
+});
+
+test('the eyes following the hand do not cancel its move; turning the whole body with the hand out counts as a sweep', () => {
+  // The hand goes 15 cm to the right in 0.3 s while the head turns after it, keeping it in the same place of the view.
+  const followed = watchWearer(0.3, (t) => {
+    const hand = [HELD[0] + 0.5 * t, HELD[1]];
+    return { head: [0, 0], yaw: Math.atan2(hand[0], hand[1]) - Math.atan2(HELD[0], HELD[1]), bodyYaw: 0, hand };
+  });
+  assert.ok(followed.slice(1).every((v) => v > 0.35), `followed by the eyes: ${Math.min(...followed.slice(1))} m/s at least for a hand moving at 0.5`);
+  // Turning on the spot by 90 degrees in 1.5 s: the hand does sweep through the room, and it is taken as that.
+  const turning = watchWearer(1.5, (t) => ({ head: [0, 0], yaw: (Math.PI / 2) * (t / 1.5), hand: HELD }));
+  assert.ok(most(turning) > 0.3, 'a turn of the body is a sweep of the hand');
+});
+
+test('a move of the hand itself counts in full, standing or walking, and to the left as to the right', () => {
+  // The hand goes 15 cm to the right in 0.3 s (0.5 m/s), then rests.
+  const flick = (t) => [HELD[0] + 0.5 * Math.min(t, 0.3), HELD[1]];
+  const standing = watchWearer(1, (t) => ({ head: [0, 0], yaw: 0, hand: flick(t) }));
+  const walking = watchWearer(1, (t) => ({ head: [0, -1.2 * t], yaw: 0.17, bodyYaw: 0.17, hand: flick(t) }));
+  for (const [name, seen] of [['standing', standing], ['walking', walking]]) {
+    const during = seen.slice(1, Math.round(0.3 * HZ) - 1);
+    assert.ok(during.every((v) => v > 0.4 && v < 0.51), `${name}: ${Math.min(...during)} to ${Math.max(...during)} m/s for a hand moving at 0.5`);
+    assert.ok(most(seen.slice(Math.round(0.3 * HZ) + 1)) < 1e-9, `${name}: nothing once the hand rests`);
+  }
+  const left = watchWearer(1, (t) => ({ head: [0, 0], yaw: 0, hand: [HELD[0] - 0.5 * Math.min(t, 0.3), HELD[1]] }));
+  assert.ok(left.slice(1, 20).every((v) => v < -0.4));
+});
+
+test('after the hand was out of sight the first frame back says nothing, however far it has moved', () => {
+  const watch = createHandWatch();
+  assert.equal(watch.measure(0.15, -0.4, 0, 0, 1, 0, 1 / HZ), null);
+  assert.equal(watch.measure(0.15, -0.4, 0, 0, 1, 0, 1 / HZ), 0);
+  watch.forget();
+  assert.equal(watch.measure(0, -0.4, 0, 0, 1, 0, 1 / HZ), null, '15 cm to the left of where it was: no kick');
+  assert.equal(watch.measure(0, -0.4, 0, 0, 1, 0, 0), null, 'no time passed: nothing to say');
+});
+
+// ---- what the wearer sees is the angle (tests from the review of 2026-11-15: before them a
+// figure whose angle ignored the hand passed every test above) ----
+
+const TURN = Math.PI * 2;
+
+/** Step once and return how far the figure turned in that step (rad, the short way round). */
+function turnedBy(spin, dt, mps) {
+  const before = spin.state().angle;
+  const d = spin.step(dt, mps) - before;
+  return d - TURN * Math.round(d / TURN);
+}
+
+test('the figure itself turns as the rate says: the angle is the rate added up, either way', () => {
+  for (const mps of [0.8, -0.8]) {
+    const spin = createSpin(K);
+    let turned = 0;
+    let summed = 0;
+    for (let k = 0; k < 3000; k++) { // 0.3 s of the hand moving, then 2.7 s of rest, in steps of 1 ms
+      turned += turnedBy(spin, 0.001, k < 300 ? mps : 0);
+      summed += spin.state().rate * 0.001;
+    }
+    assert.ok(Math.abs(turned - summed) < 0.01, `turned ${turned} rad, the rate added up ${summed} rad`);
+    if (mps > 0) assert.ok(turned > 3 * USUAL + 3, `to the right it turned ${turned} rad in 3 s, far more than the usual ${3 * USUAL}`);
+    else assert.ok(turned < -1, `to the left it turned ${turned} rad: backwards`);
+  }
+});
+
+test('a step is the exact solution: one frame of 0.1 s lands where a hundred of 1 ms do', () => {
+  for (const mps of [0.1, -0.3]) {
+    const coarse = createSpin(K);
+    const fine = createSpin(K);
+    for (const spin of [coarse, fine]) for (let k = 0; k < 2000; k++) spin.step(0.001, mps); // the hand's smoothed speed has settled, the rate has not
+    assert.ok(Math.abs(coarse.state().rate - (USUAL + K.perM * K.returnS * Math.sign(mps) * (Math.abs(mps) - K.deadMps))) > 0.3, 'the rate is still on its way');
+    const one = turnedBy(coarse, 0.1, mps);
+    let hundred = 0;
+    for (let k = 0; k < 100; k++) hundred += turnedBy(fine, 0.001, mps);
+    assert.ok(Math.abs(coarse.state().rate - fine.state().rate) < 1e-9, `rate ${coarse.state().rate} against ${fine.state().rate}`);
+    assert.ok(Math.abs(one - hundred) < 1e-9, `turned ${one} against ${hundred}`);
+  }
+});
+
+test('held at the limit on the side it was pulled to, and turning that way', () => {
+  for (const wild of [50, -50]) {
+    const spin = createSpin(K);
+    let turned = 0;
+    for (let k = 0; k < 72; k++) turned = turnedBy(spin, 1 / 72, wild);
+    assert.equal(spin.state().rate, Math.sign(wild) * K.maxRadS);
+    assert.ok(Math.abs(turned - (Math.sign(wild) * K.maxRadS) / 72) < 1e-9, `a frame at the limit turns ${turned} rad`);
+  }
+});
+
+test('the push grows from nothing above deadMps, and a jump of the tracking counts as maxMps at most', () => {
+  const spin = createSpin(K);
+  for (let k = 0; k < 20 * 72; k++) spin.step(1 / 72, K.deadMps + 0.01); // 1 cm/s over: settles at perM x returnS x 0.01 more
+  assert.ok(Math.abs(spin.state().rate - USUAL - K.perM * K.returnS * 0.01) < 1e-3, `rate ${spin.state().rate}`);
+  const jump = createSpin(K);
+  const most = createSpin(K);
+  jump.step(1 / 72, 50);
+  most.step(1 / 72, K.maxMps);
+  assert.deepEqual(jump.state(), most.state());
 });

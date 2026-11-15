@@ -14,7 +14,8 @@
 //   push    the hand's sideways speed (m/s, positive to the wearer's right), smoothed and with
 //           the trembling of hand tracking taken out (below deadMps it is 0).
 //   perM    what a metre of sideways movement adds to the rate (rad/s per metre): the gain.
-//   returnS the time constant of the way back: after 3 x returnS it is within 5 % of the usual turn.
+//   returnS the time constant of the way back: after 3 x returnS about a twentieth of what the
+//           hand added is left.
 //
 // A step works the equation out exactly for the time that passed (the push taken as steady over
 // it), so the figure turns the same at 72, 90 or 120 frames a second and a long frame cannot
@@ -66,13 +67,52 @@ export function createSpin(K) {
       return angle;
     },
 
-    /** The figure comes up anew: at its usual turn, with no movement of the hand remembered. It keeps facing the way it faced. */
-    rest() {
-      rate = usual;
-      speed = 0;
+    /** How it turns now: { angle (rad), rate (rad/s), usual (rad/s), handMps (the hand's sideways speed as taken: smoothed, before the dead zone) }. */
+    state: () => ({ angle, rate, usual, handMps: speed }),
+  };
+}
+
+/**
+ * How fast the hand itself moves sideways, told apart from the wearer moving.
+ *
+ * Measured in the room, the palm moves sideways whenever the wearer walks with the head a little
+ * turned or steps aside, and the figure would spin for as long as that lasts. So the palm is
+ * watched against the head: its place minus the head's, and how that changes along the wearer's
+ * right. Walking and stepping aside carry head and hand alike and change nothing; turning the
+ * head changes nothing either, as long as "the head's place" is the axis it turns on (a little
+ * behind the eyes: the caller's business).
+ *
+ * Not measured in the head's own view (how far right of where the head faces the palm lies): a
+ * wearer whose eyes follow the moving hand would then cancel the move. The price: turning the
+ * whole body with the hand held out counts as the hand sweeping through the room, which it does;
+ * without a torso to go by it cannot be told from an arm's sweep.
+ */
+export function createHandWatch() {
+  let known = false; // the values below are of the frame before
+  let wasX = 0; // the palm's place minus the head's, in room axes (m)
+  let wasZ = 0;
+
+  return {
+    /**
+     * This frame's palm (px, pz), the axis the head turns on (hx, hz) and the wearer's right
+     * (rx, rz: unit length, on the floor), all in room coordinates, and the seconds since the
+     * frame before. Returns the hand's own sideways speed (m/s, positive to the wearer's
+     * right), or null when there is nothing to compare with: the first frame after forget(),
+     * or no time passed.
+     */
+    measure(px, pz, hx, hz, rx, rz, dt) {
+      const x = px - hx;
+      const z = pz - hz;
+      const mps = known && dt > 0 ? ((x - wasX) * rx + (z - wasZ) * rz) / dt : null;
+      wasX = x;
+      wasZ = z;
+      known = true;
+      return mps;
     },
 
-    /** How it turns now: { angle (rad), rate (rad/s), usual (rad/s), push (m/s, the hand's speed as taken) }. */
-    state: () => ({ angle, rate, usual, push: speed }),
+    /** The hand was out of sight, or the hologram was down: the next frame is a first one. */
+    forget() {
+      known = false;
+    },
   };
 }

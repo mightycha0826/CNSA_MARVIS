@@ -212,13 +212,15 @@ export const HUD = {
     /** The hand spins the figure (hud/spin.js): moving the right hand sideways turns it faster
      *  that way, and it comes back to its usual turn by itself.
      *  perM: what a metre of sideways movement adds to its rate (rad/s per metre): a 15 cm
-     *    flick gives about 3.5 rad/s more, a good half turn a second
-     *  returnS: time constant of the way back (s): within 5 % of the usual turn after three of these
+     *    flick gives about 3.3 rad/s more, about half a turn a second (a slow 15 cm in a second: 2.5)
+     *  returnS: time constant of the way back (s): after three of these about a twentieth of what the hand added is left
      *  maxRadS: it never turns faster than this, either way (rad/s; 10 is 1.6 turns a second)
      *  deadMps: a hand slower than this sideways is being held still: no push (m/s)
      *  smoothS: the hand's speed is smoothed over about this long, against the trembling of hand tracking (s)
-     *  maxMps: a hand does not move faster than this; more is the tracking jumping (m/s) */
-    spin: { perM: 30, returnS: 1.5, maxRadS: 10, deadMps: 0.05, smoothS: 0.08, maxMps: 2.5 },
+     *  maxMps: a hand does not move faster than this; more is the tracking jumping (m/s)
+     *  neckM: the axis the head turns on lies this far behind the eyes (m): the hand's movement is
+     *    measured against it, so that turning the head is not taken for the hand moving */
+    spin: { perM: 30, returnS: 1.5, maxRadS: 10, deadMps: 0.05, smoothS: 0.08, maxMps: 2.5, neckM: 0.09 },
     /** The open palm must be up this long before the hologram appears (ms), and how fast it follows the hand (1/s) */
     holdMs: 200,
     followRate: 18,

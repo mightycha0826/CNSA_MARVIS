@@ -9,6 +9,12 @@
 // the right, to the left slows it and turns it the other way, like a hand stroking a globe; a
 // longer or quicker move spins it more. Left alone it comes back to its usual slow turn, fast
 // at first and then ever more slowly. The readings on their chips do not turn with it.
+// Only a move of the hand itself counts: walking, a step aside or turning the head do not
+// spin it (turning the whole body with the hand held out does: the hand sweeps through the
+// room then). Bringing the hand back pushes it the other way, so a quick move out and back
+// leaves it about where it was: move the hand and let it rest. Not checked on the headset:
+// the numbers in HUD.suit.spin are set from arithmetic and a PC browser, not from real hand
+// tracking.
 //
 // The readings use the map's "cylinder" in their own way. The map has one caption card on the
 // side of its cylinder; here an imaginary cylinder stands around the figure, wide enough to
@@ -55,7 +61,7 @@ import * as THREE from 'three';
 import { HUD } from './config.js';
 import { T } from './tokens.js';
 import { suitStates, worst } from './suit-limits.js';
-import { createSpin } from './spin.js';
+import { createSpin, createHandWatch } from './spin.js';
 import { makePalmState } from '../core/palm.js';
 import { finiteOr as num } from '../core/params.js';
 import { makeBeam, floatOverPalm, popIn, popScale } from '../core/hologram.js';
@@ -494,14 +500,15 @@ export function createSuit(ctx) {
   // How the figure turns (spin.js): at its usual rate, faster one way or the other when the
   // hand moves sideways, and back to the usual rate when the hand rests.
   const spin = createSpin({ turnS: K.turnS, ...K.spin });
-  const palmWas = new THREE.Vector3(); // where the palm was in the frame before
-  let palmKnown = false; // palmWas is of the frame before this one
+  const hand = createHandWatch(); // tells the hand's own sideways movement from the wearer's (spin.js)
+  const headAt = new THREE.Vector3(); // where the head is in this frame
   let sidewaysMps = null; // the hand's speed to the wearer's right in this frame, or null when there is nothing to go by
   let flick = null; // PC: a move of the hand played by hand, { mps, until }
   let goneSince = null; // since when it has been shrinking away, or null
 
   /** The hand no longer holds it up: shrink it away where it stood, then hide it. */
   function leave(now) {
+    hand.forget(); // the next frame the palm is seen in is a first one (also after hide(): no hand in view at all)
     if (up) {
       up = false;
       goneSince = now;
@@ -587,16 +594,14 @@ export function createSuit(ctx) {
     if (pinned) return;
     const now = performance.now();
     const shown = floatOverPalm(root, beam, frame, ctx.camera, palmState, floatState, { holdMs: K.holdMs, followRate: K.followRate, widthM: K.plateM, hand: 'right', allowed });
-    if (!shown) {
-      palmKnown = false;
-      return leave(now); // a fist, the hand turned over, or the left hand's veto
-    }
-    if (!up) spin.rest(); // it comes up anew: at its usual turn
-    // How fast the hand moves sideways: the palm's way since the last frame, along the wearer's
-    // right. Not in the first frame it is up, nor in the first after it was out of sight.
-    if (palmKnown && frame.dt > 0) sidewaysMps = ((palmState.palm.x - palmWas.x) * palmState.right.x + (palmState.palm.z - palmWas.z) * palmState.right.z) / frame.dt;
-    palmWas.copy(palmState.palm);
-    palmKnown = true;
+    if (!shown) return leave(now); // a fist, the hand turned over, or the left hand's veto
+    // How fast the hand itself moves sideways, measured against the head so that walking, a step
+    // aside or a turn of the head is not taken for it (spin.js: createHandWatch). Against the
+    // axis the head turns on, a little behind the eyes: the eyes themselves swing sideways
+    // when the head turns. Null in the first frame it is up and in the first after the hand
+    // was out of sight.
+    ctx.camera.getWorldPosition(headAt).addScaledVector(palmState.forward, -K.spin.neckM);
+    sidewaysMps = hand.measure(palmState.palm.x, palmState.palm.z, headAt.x, headAt.z, palmState.right.x, palmState.right.z, frame.dt);
     up = true;
     goneSince = null;
     popScale(root, 1, popIn(comeUp, true, now)); // it springs up
@@ -615,12 +620,15 @@ export function createSuit(ctx) {
       reading.pressureKpa = kpa;
       reading.heart = heart;
     }
-    if (!root.visible) return;
     // The figure turns; the hand's sideways movement of this frame, if any, spins it (spin.js).
-    // While it shrinks away it only turns on, with no hand to push it.
+    // It turns on while it shrinks away and while it is out of sight, with no hand to push it:
+    // a frame or two without the hand in the middle of a move does not throw the spin away, and
+    // after a longer while it is back at its usual turn by itself.
     if (flick && now >= flick.until) flick = null;
-    figure.spinner.rotation.y = spin.step(dt, flick ? flick.mps : up ? sidewaysMps : null);
+    const angle = spin.step(dt, flick ? flick.mps : up ? sidewaysMps : null);
     sidewaysMps = null; // used up: the next frame has to measure its own
+    if (!root.visible) return;
+    figure.spinner.rotation.y = angle;
     if (dirty) redraw();
     placeChips();
     // A part in trouble pulses, so it is noticed from whichever side the figure shows.
@@ -637,6 +645,7 @@ export function createSuit(ctx) {
     /** No right hand in view (or no hands at all): the hologram goes, unless pinned. */
     hide() {
       if (pinned) return;
+      floatState.shownSince = null; // the open palm has to be held up anew (place() does this itself; here it is not run)
       leave(performance.now());
     },
     /** The hologram is up: its readings are shown here and leave the status tiles (index.js). */
@@ -679,7 +688,7 @@ export function createSuit(ctx) {
       dirty = true;
     },
     state: () => ({ reading: { ...reading }, ...describe(), shown: root.visible, model: modelNote }),
-    /** How the figure turns now: { angle, rate, usual (rad/s), push (the hand's sideways speed as taken, m/s) }. */
+    /** How the figure turns now: { angle, rate, usual (rad/s), handMps (the hand's sideways speed as taken, m/s) }. */
     spin: () => spin.state(),
     /** PC: as if the right hand moved sideways at `mps` (m/s, + to the wearer's right) for `seconds`: flick(0.75), flick(-0.75). */
     flick(mps, seconds = 0.2) {
