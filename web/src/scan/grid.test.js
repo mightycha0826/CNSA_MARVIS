@@ -5,7 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
 import { SCAN } from './index.js';
-import { createGrid, viewOf, addDepthView, depthBufferToMeters, mergeLayers, PASSABLE, OBSTACLE, UNKNOWN } from './grid.js';
+import { createGrid, viewOf, addDepthView, depthBufferToMeters, depthTable, mergeLayers, PASSABLE, OBSTACLE, UNKNOWN } from './grid.js';
 import { TILES, moveWindow } from './tiles.js';
 
 // A 16 m grid around the origin: the arithmetic is the same on the scan's larger window.
@@ -189,6 +189,94 @@ test('a low step down is not a drop, and a drop that turns out to be floor is cl
   assert.equal(grid.cells[cellOf(0.05, -1.85)], PASSABLE);
 });
 
+test('a chair near the end of the range is marked and cleared however the head is tilted; with fewer samples it could not be cleared', () => {
+  const chairAt = (z) => new THREE.Box3(new THREE.Vector3(-0.25, 0, -z - 0.25), new THREE.Vector3(0.25, 0.9, -z + 0.25));
+  const far = SCAN.depthRangeM - 0.4;
+  // Marked after setScans reads of the chair, then cleared by clearScans reads of the floor it stood on.
+  const setAndCleared = (cfg, camera) => {
+    const grid = createGrid(COLS, COLS, SCAN.cellM, ORIGIN, cfg);
+    const look = (thing) => {
+      addDepthView(grid, depthSensor(camera, thing), camera.projectionMatrix.elements, camera.matrixWorld.elements, cfg);
+      grid.commit();
+    };
+    for (let i = 0; i < cfg.setScans; i++) look(chairAt(far));
+    const marked = grid.cells.includes(OBSTACLE);
+    for (let i = 0; i < cfg.clearScans; i++) look(null);
+    return marked && !grid.cells.includes(OBSTACLE);
+  };
+  // Looking at the floor at one's feet, well ahead, and at the chair itself.
+  for (const ahead of [1.5, 3, far]) assert.ok(setAndCleared(SCAN, questEye(ahead)), `looking ${ahead} m ahead`);
+  // Why the sample count went up with the range: at this distance too few of 192 x 192 points
+  // land in a floor cell for it to say "floor", so the chair stays on the map after it is gone.
+  assert.ok(SCAN.depthRangeM >= 4 && SCAN.depthSamples >= 288);
+  assert.equal(setAndCleared({ ...SCAN, depthSamples: 192 }, questEye(3)), false);
+});
+
+test('commit looks only at the cells a read can change, and the map comes out as when it looked at all of them', () => {
+  // Two grids fed the same: one commits the short way, the other every cell every time (as
+  // before 2026-11-15). A wearer wanders, reads land around them and elsewhere, the window
+  // shifts, tiles are laid back, the floor under the feet is freed.
+  let seed = 12345;
+  const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 32);
+  for (const extra of [{}, { settleScans: 0 }, { giveUpScans: 3, settleScans: 2, resettleScans: 1 }]) {
+    const cfg = { ...SCAN, ...extra };
+    const short = createGrid(COLS, COLS, SCAN.cellM, ORIGIN, cfg);
+    const long = createGrid(COLS, COLS, SCAN.cellM, ORIGIN, { ...cfg, commitAll: true });
+    const both = (f) => [f(short), f(long)];
+    let origin = [...ORIGIN];
+    let [hx, hz] = [0, 0];
+    let now = 0;
+    // Places where a thing comes and goes: the same cells are seen again and again, so it
+    // matters whether two sightings came in a row or with a read between them.
+    const spots = Array.from({ length: 12 }, () => [(rnd() - 0.5) * 9, (rnd() - 0.5) * 9]);
+    for (let step = 0; step < 400; step++) {
+      now += SCAN.depthMs;
+      hx = Math.max(-6, Math.min(6, hx + (rnd() - 0.5) * 1.2));
+      hz = Math.max(-6, Math.min(6, hz + (rnd() - 0.5) * 1.2));
+      const view = step % 7 === 3 ? null : { ...headAt(hx, hz), now };
+      if (view) {
+        both((g) => g.reopen(view));
+        if (step % 5 === 0) assert.deepEqual(...both((g) => g.refresh(view, now, 400)), `refresh, step ${step}`);
+        assert.deepEqual(...both((g) => g.unsettledInView(view)), `unsettled in view, step ${step}`);
+      }
+      // A few clumps of points: things, floor, and stray single points, near the wearer and anywhere.
+      const clumps = 1 + Math.floor(rnd() * 4);
+      for (let k = 0; k < clumps; k++) {
+        const near = rnd() < 0.8;
+        const x = near ? hx + (rnd() - 0.5) * 6 : (rnd() - 0.5) * 15;
+        const z = near ? hz + (rnd() - 0.5) * 6 : (rnd() - 0.5) * 15;
+        const y = [0.5, 0.5, 0, 0, 0, 0.2, -0.6][Math.floor(rnd() * 7)];
+        const points = Math.floor(rnd() * 8); // sometimes fewer than minPoints
+        for (let q = 0; q < points; q++) {
+          const px = x + (rnd() < 0.5 ? 0 : 0.11); // one point, the same for both grids
+          both((g) => g.add(px, y, z));
+        }
+      }
+      for (const [x, z] of spots) {
+        const roll = rnd();
+        if (roll < 0.35) for (let q = 0; q < 4; q++) both((g) => g.add(x, 0.5, z));
+        else if (roll < 0.5) for (let q = 0; q < 4; q++) both((g) => g.add(x, 0, z));
+      }
+      assert.deepEqual(...both((g) => g.commit(view)), `what commit says changed, step ${step}`);
+      if (step % 37 === 11) both((g) => g.freeAround(hx, hz, 0.25));
+      if (step % 9 === 4) {
+        // The window moves by a few cells (kept near where it started, so the wearer stays on it).
+        const d = [0, 1].map((k) => (Math.abs(origin[k] - ORIGIN[k]) > 1.5 ? Math.sign(origin[k] - ORIGIN[k]) * -8 : Math.floor(rnd() * 3 - 1) * 8));
+        origin = [origin[0] + d[0] * SCAN.cellM, origin[1] + d[1] * SCAN.cellM];
+        both((g) => g.shift(d[0], d[1], origin));
+      }
+      if (step % 13 === 6) {
+        const tile = Uint8Array.from({ length: 16 * 16 }, () => [PASSABLE, OBSTACLE, UNKNOWN][Math.floor(rnd() * 3)]);
+        const at = [Math.floor(rnd() * (COLS - 16)), Math.floor(rnd() * (COLS - 16))];
+        both((g) => g.restore(at[0], at[1], 16, tile));
+      }
+      assert.deepEqual(short.cells, long.cells, `cells, step ${step}`);
+      assert.equal(short.settledCount, long.settledCount, `settled, step ${step}`);
+    }
+    assert.ok(short.cells.includes(OBSTACLE) && short.cells.includes(PASSABLE), 'the walk marked things and floor');
+  }
+});
+
 test('with dropMinM 0 ground below the floor says nothing, as before', () => {
   const cfg = { ...SCAN, dropMinM: 0 };
   const grid = createGrid(COLS, COLS, SCAN.cellM, ORIGIN, cfg);
@@ -295,6 +383,25 @@ test("the wearer's own hands and invalid depth are ignored", () => {
     }
   }
   assert.ok(grid.cells.every((c) => c === UNKNOWN));
+});
+
+test('the table of depths holds what the conversion gives for each of the 65,536 two-byte values', () => {
+  for (const [near, far] of [[0.1, Infinity], [0.1, 50], [0.2, 0]]) {
+    const table = depthTable(near, far);
+    assert.equal(table.length, 65536);
+    for (let code = 0; code < 65536; code += 7) {
+      const exact = depthBufferToMeters(((code >> 8) + (code & 255) / 255) / 255, near, far);
+      assert.equal(table[code], Math.fround(exact), `bytes ${code >> 8}, ${code & 255}`);
+    }
+    assert.equal(table[0], 0, 'no data');
+    assert.equal(table[65535], 0, 'nothing there');
+  }
+  // as depth.js reads it: the two bytes of a sample, high first
+  const table = depthTable(0.1, Infinity);
+  const b = 1 - 0.1 / 3.2; // the depth-buffer value of a point 3.2 m away
+  const high = Math.floor(b * 255);
+  const low = Math.round((b * 255 - high) * 255);
+  assert.ok(Math.abs(table[(high << 8) | low] - 3.2) < 0.01);
 });
 
 test('depth-buffer values convert to metres like the projection that wrote them', () => {
@@ -533,24 +640,25 @@ test('a known cell that comes back into the window is settled and left alone unt
 
 // ---- the chair problem: something put down on, or taken off, ground that was already settled ----
 
-// Reads of one cell, 350 ms apart, until `until(state)` holds or `limit` reads have passed.
+// Reads of one cell, as far apart as the app reads (SCAN.depthMs), until `until(state)` holds or
+// `limit` reads have passed.
 // The caller stands still; the app's read loop is played here: reopen, refresh when nothing is
 // open in view, read, commit. Returns the seconds it took, or null.
 function watch(grid, view, x, z, obstaclePoints, floorPoints, until, clock, limit = 40) {
   for (let k = 1; k <= limit; k++) {
-    clock.ms += 350;
+    clock.ms += SCAN.depthMs;
     view.now = clock.ms;
     grid.reopen(view);
-    if (!grid.unsettledInView(view) && !grid.refresh(view, clock.ms, SCAN.refreshS * 1000)) continue; // a skipped read
+    if (!grid.refresh(view, clock.ms, SCAN.refreshS * 1000) && !grid.unsettledInView(view)) continue; // a skipped read (the app's loop: scan/index.js readLive)
     for (let p = 0; p < obstaclePoints; p++) grid.add(x, 0.5, z);
     for (let p = 0; p < floorPoints; p++) grid.add(x, 0, z);
     grid.commit(view);
-    if (until(grid.cells[cellOf(x, z)])) return (k * 350) / 1000;
+    if (until(grid.cells[cellOf(x, z)])) return (k * SCAN.depthMs) / 1000;
   }
   return null;
 }
 
-test('a chair put down on settled floor is marked within a few seconds, and cleared again when it is taken away', () => {
+test('a chair put down on settled floor is marked within a second and a half, and cleared within two when it is taken away', () => {
   const grid = newGrid();
   const many = SCAN.minPoints * 3;
   const view = headAt(0, 0);
@@ -562,12 +670,47 @@ test('a chair put down on settled floor is marked within a few seconds, and clea
   assert.equal(grid.unsettledInView(view), false, 'all of the view is settled');
   // A chair is put down.
   const marked = watch(grid, view, x, z, many, 0, (cell) => cell === OBSTACLE, clock);
-  assert.ok(marked !== null && marked <= 3, `marked after ${marked} s`);
+  assert.ok(marked !== null && marked <= 1.5, `marked after ${marked} s`); // it was up to 2.1 s with a read every 350 ms and a look every 1.5 s
   // It stands there until that has settled too, then it is taken away.
   watch(grid, view, x, z, many, 0, () => false, clock, 30);
   assert.equal(grid.cells[cellOf(x, z)], OBSTACLE);
   const cleared = watch(grid, view, x, z, 0, many, (cell) => cell === PASSABLE, clock);
-  assert.ok(cleared !== null && cleared <= 4, `cleared after ${cleared} s`);
+  assert.ok(cleared !== null && cleared <= 2, `cleared after ${cleared} s`); // it was up to 2.45 s
+});
+
+test('a chair on settled floor is marked as quickly when something else in view never settles (a real depth image)', () => {
+  // On the headset a few cells always flicker, so "nothing in view is open" hardly ever holds.
+  // Settled ground must be looked at again all the same, on its own clock.
+  const grid = newGrid();
+  const many = SCAN.minPoints * 3;
+  const view = headAt(0, 0);
+  const [x, z] = [0.05, -1.55];
+  const flicker = [0.65, -2.05]; // a cell that says "thing" and "floor" in turn: it never settles
+  let ms = 0;
+  let k = 0;
+  // The app's loop (scan/index.js readLive). Returns the seconds until `until` holds, or null.
+  const watchNoisy = (obstaclePoints, floorPoints, until, limit) => {
+    for (let n = 1; n <= limit; n++) {
+      ms += SCAN.depthMs;
+      view.now = ms;
+      grid.reopen(view);
+      if (!grid.refresh(view, ms, SCAN.refreshS * 1000) && !grid.unsettledInView(view)) continue;
+      for (let p = 0; p < many; p++) grid.add(flicker[0], k++ % 2 ? 0.5 : 0, flicker[1]);
+      for (let p = 0; p < obstaclePoints; p++) grid.add(x, 0.5, z);
+      for (let p = 0; p < floorPoints; p++) grid.add(x, 0, z);
+      grid.commit(view);
+      if (until(grid.cells[cellOf(x, z)])) return (n * SCAN.depthMs) / 1000;
+    }
+    return null;
+  };
+  watchNoisy(0, many, () => false, 60);
+  assert.equal(grid.cells[cellOf(x, z)], PASSABLE);
+  assert.equal(grid.unsettledInView(view), true, 'something in view is still open');
+  const marked = watchNoisy(many, 0, (cell) => cell === OBSTACLE, 60);
+  assert.ok(marked !== null && marked <= 1.5, `marked after ${marked} s`);
+  watchNoisy(many, 0, () => false, 40);
+  const cleared = watchNoisy(0, many, (cell) => cell === PASSABLE, 60);
+  assert.ok(cleared !== null && cleared <= 2, `cleared after ${cleared} s`);
 });
 
 test('ground that stays as it is costs only a few reads each time it is looked at again', () => {
@@ -577,11 +720,11 @@ test('ground that stays as it is costs only a few reads each time it is looked a
   const [x, z] = [0.05, -1.55];
   let reads = 0;
   let ms = 0;
-  for (let k = 0; k < 120; k++) { // 42 s of standing still in front of bare floor
-    ms += 350;
+  for (let k = 0; k < 120; k++) { // 24 s of standing still in front of bare floor
+    ms += SCAN.depthMs;
     view.now = ms;
     grid.reopen(view);
-    if (!grid.unsettledInView(view) && !grid.refresh(view, ms, SCAN.refreshS * 1000)) continue;
+    if (!grid.refresh(view, ms, SCAN.refreshS * 1000) && !grid.unsettledInView(view)) continue;
     for (let p = 0; p < many; p++) grid.add(x, 0, z);
     grid.commit(view);
     if (k >= 60) reads++; // the second half: everything has settled once by then

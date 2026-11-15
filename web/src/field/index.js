@@ -18,7 +18,7 @@
 //     what the headset has scanned (`hazard:update` from scan/): clear floor and structure.
 //     Ground the headset knows nothing about is left empty, with no frame around the map.
 //     (It used to show the Mars image there, which read as floor that had been seen.)
-//     The scan arrives at most twice a second, and with live depth (on by default in this mode,
+//     The scan arrives at most four times a second, and with live depth (on by default in this mode,
 //     core/xr.js) it includes what was put down or taken away a moment ago: the map follows.
 //     The scanned ground still rises and falls with the Mars terrain under the wearer.
 //   - It is the same kind of object as the Mars map (core/hologram.js): a relief floating over
@@ -85,10 +85,10 @@ export const FIELD = {
   segments: 128, // the map surface is a grid of this many quads per side, raised into a relief
   structureM: 1.0, // scanned structure stands this tall on the map, in room metres (the scan has no heights)
   reliefMaxM: 3, // the Mars terrain under the wearer rises and falls at most this much on the map (room metres)
-  redrawMs: 200,
+  redrawMs: 120, // the palm map is drawn again at most this often (it was 200; the scan now sends up to four times a second)
   showRouteBeyondM: 1.0, // the route appears once the wearer is this far from the target
   arrivedM: 0.5,
-  replanMs: 500,
+  replanMs: 300, // the route is planned again at most this often (it was 500)
 };
 
 let ctx;

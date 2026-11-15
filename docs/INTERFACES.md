@@ -222,7 +222,7 @@ bus.on('layer:toggle', ({ id, visible }) => { /* ... */ });   // receive
 | `layers:ready` | B (core) | D, F | Once, when `layerset.json` and the files are loaded |
 | `layer:toggle` | F, B (from voice) | D | A layer is turned on or off |
 | `env:update` | B (core) | F | The next `env.json` sample is replayed |
-| `hazard:update` | A | D, F | The field obstacle grid changes (at most twice a second). The grid is a window of 256 × 256 cells that moves with the wearer in steps of a tile (6.4 m): **read `originXZ` from every event**. An obstacle stays in it until clear floor is seen where it stood, or the wearer walks there |
+| `hazard:update` | A | D, F | The field obstacle grid changes (at most four times a second). The grid is a window of 256 × 256 cells that moves with the wearer in steps of a tile (6.4 m): **read `originXZ` from every event**. An obstacle stays in it until clear floor is seen where it stood, or the wearer walks there |
 | `nav:request` | F, B (from voice) | D | A route is requested |
 | `nav:route` | D | F | A route was computed |
 | `telemetry:update` | B (from the Jetson) | F | The ambient temperature (the sensor on the suit) arrives (once a second) |
@@ -282,9 +282,9 @@ bus.on('layer:toggle', ({ id, visible }) => { /* ... */ });   // receive
 ```
 `cells` values: `0` passable, `1` obstacle, `255` unknown. The index is `row * cols + col`; `originXZ` is the room coordinate of cell `[0, 0]`.
 
-The real scan (`web/src/scan/`) sends a 16 m × 16 m grid (160 × 160 cells) built from the room geometry the headset keeps (WebXR `mesh-detection` and `plane-detection`), with two extra fields: `"source": "room-scan"` and `"stats": { "meshes", "planes", "obstacles", "floor", "depth" }`. It is the room as last scanned by the headset, not live depth.
+The real scan (`web/src/scan/`) sends its window, 25.6 m × 25.6 m (256 × 256 cells) around the wearer, built from the room geometry the headset keeps (WebXR `mesh-detection` and `plane-detection`), with two extra fields: `"source": "room-scan"` and `"stats": { "meshes", "planes", "obstacles", "floor", "depth", "stored", "settled", "reads", "skips", "refreshes", "archived", "windowXZ", "depthPx" }`. Without live depth it is the room as last scanned by the headset.
 
-With live depth the headset's depth image is laid over the same cells twice a second. The field map asks for it by default (`?depth=0` leaves it out); the Mars map only with `?depth=1`. Then something put down about 1 to 2.3 m from the wearer after the room scan becomes obstacle cells within a few seconds, and passable again when it is taken away (not yet checked on the headset). `source` is then `"room-scan+depth"`, and `stats.depth` counts the cells live depth blocks at that moment. Live depth never clears a cell the room scan marked as an obstacle.
+With live depth the headset's depth image is laid over the same cells five times a second. The field map asks for it by default (`?depth=0` leaves it out); the Mars map only with `?depth=1`. Then something put down about 1 to 3.8 m from the wearer becomes obstacle cells within a second or two, and passable again when it is taken away (this range and rate are not yet checked on the headset). `stats.depthPx` is the depth image's width and height and the samples per side taken from it; `stats.reads` counts the reads. `source` is then `"room-scan+depth"`, and `stats.depth` counts the cells live depth blocks at that moment. Live depth never clears a cell the room scan marked as an obstacle.
 
 **`nav:request`**
 ```json
@@ -413,7 +413,7 @@ B sends the text to the hub, which treats it as speech. Without a hub, B emits `
 | `mic.end` | `{}` | Microphone stream ends. Without `"stream": true` in `mic.begin`, everything between `mic.begin` and `mic.end` is one utterance |
 | `voice.status` | `{ "mic": "on", "audio": "running", "inputRate": 48000, "level": 0.02 }` | When the microphone or audio state changes, and every 10 s. Shows in the hub log why a headset is silent |
 | `voice.text` | `{ "text": "Status" }` | A command picked from the headset's menu. The hub handles it exactly like recognized speech |
-| `client.log` | `{ "kind": "error", "message": "..." }` | Headset diagnostics: errors, AR session events, a position heartbeat every 5 s. Written to `jetson/logs/headset.log` |
+| `client.log` | `{ "kind": "error", "message": "..." }` | Headset diagnostics: errors, AR session events, and a heartbeat every 5 s (`kind: "beat"`: head position, tracked hands, visibility, `fps` and `slowestMs` over those 5 s, and `scan`: what the obstacle scan last reported). Written to `jetson/logs/headset.log` |
 | `voice.say` | `{ "text": "...", "priority": "normal" }` | Forwards the browser's `voice:say` as is |
 | `state` | `{ "mode": "normal", "navStatus": "ok", "targetId": "site1" }` | When state changes. The voice assistant uses it to answer "status report" |
 | `map.store` | `{ "run": "abc-0", "cellSizeM": 0.1, "tileCells": 64, "tiles": [{ "x": -1, "z": 0, "runs": [255, 3996, 1, 100] }], "source": "room-scan+depth", "stats": {} }` | Tiles of the field map that changed, at most every 2 s. The hub keeps one file per run (`jetson/maps/field-<time>-<run>.json`) with every tile the run has sent; a later tile replaces an earlier one. A run is one stretch in one set of room coordinates. At most 4096 tiles a run |

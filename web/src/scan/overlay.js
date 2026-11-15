@@ -1,7 +1,7 @@
 // Obstacle highlight on the real floor (field mode): each obstacle's footprint is filled with a
 // soft translucent red, the way a phone shades what it has picked out of a photo before
 // erasing it, with a light that travels across it and a few sparks. It is shown in full within
-// 2 m of the wearer and fades out exponentially beyond. There is no outline and no halo: on the headset a bright line around every obstacle was more than the room needed.
+// 3.2 m of the wearer (SCAN.glowFullM) and fades out exponentially beyond. There is no outline and no halo: on the headset a bright line around every obstacle was more than the room needed.
 // Nothing blocky: the edge of the fill is drawn from a distance field, so it follows the shape
 // and not the 10 cm cells, and fades out over a few centimetres.
 //
@@ -109,7 +109,7 @@ void main() {
 }`;
 
 /** @param cfg { glowRGB, glintRGB } each [r, g, b] 0-255, glowFullM, glowFadeM (SCAN in index.js) */
-export function initOverlay(ctx, { glowRGB, glintRGB, glowFullM = 2, glowFadeM = 0.7 }) {
+export function initOverlay(ctx, { glowRGB, glintRGB, glowFullM = 3.2, glowFadeM = 1 }) {
   let floor = null;
   const rgb = (v) => new THREE.Color().setRGB(v[0] / 255, v[1] / 255, v[2] / 255, THREE.SRGBColorSpace);
 
