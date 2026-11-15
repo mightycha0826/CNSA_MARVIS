@@ -1,5 +1,5 @@
-// Reads the headset's live depth image into the live grid (grid.js). Called by index.js twice a
-// second, only when the session has `depth-sensing` (?depth=1).
+// Reads the headset's live depth image into the live grid (grid.js). Called by index.js five
+// times a second (SCAN.depthMs), only when the session has `depth-sensing` (field mode, or ?depth=1).
 //
 // On the Quest 3 depth only exists as a texture (session.depthUsage 'gpu-optimized'): one layer
 // per eye holding depth-buffer values (0..1) for a projection with the planes depthNear and
@@ -12,9 +12,12 @@
 
 import * as THREE from 'three';
 import { FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
-import { addDepthView, depthBufferToMeters } from './grid.js';
+import { addDepthView, depthTable } from './grid.js';
 
-let reader = null; // { texture, target, bytes, quad }, made on the first read
+let reader = null; // { texture, target, bytes, quad, n, cfg, near, far, metres }, made on the first read
+
+/** What the headset's depth image is, known from the first read on: for the scan's stats (and so the hub's log). */
+export const depthImage = { width: 0, height: 0, samples: 0 };
 
 /** @returns false when the browser had no depth image for this frame (nothing was added) */
 export function readDepth(renderer, frame, grid, cfg) {
@@ -26,10 +29,15 @@ export function readDepth(renderer, frame, grid, cfg) {
   // No depth is normal on some frames: for a moment after the session starts, or between images.
   if (!depth?.texture || depth.isValid === false || !(depth.depthNear > 0)) return false;
 
-  const n = cfg.depthSamples;
   if (!reader) {
-    console.info('[scan] live depth:', depth.width, 'x', depth.height, 'near', depth.depthNear, 'far', depth.depthFar, 'rawValueToMeters', depth.rawValueToMeters);
+    // Never more samples per side than the image has pixels: two samples of one pixel are one
+    // measurement counted twice, and minPoints is there to ask for several.
+    const n = Math.max(1, Math.min(cfg.depthSamples, depth.width || cfg.depthSamples, depth.height || cfg.depthSamples));
+    Object.assign(depthImage, { width: depth.width ?? 0, height: depth.height ?? 0, samples: n });
+    console.info('[scan] live depth:', depth.width, 'x', depth.height, 'near', depth.depthNear, 'far', depth.depthFar, 'rawValueToMeters', depth.rawValueToMeters, 'samples per side', n);
     reader = {
+      n,
+      cfg: n === cfg.depthSamples ? cfg : { ...cfg, depthSamples: n },
       texture: new THREE.ExternalTexture(),
       target: new THREE.WebGLRenderTarget(n, n, { depthBuffer: false }),
       bytes: new Uint8Array(n * n * 4),
@@ -53,7 +61,7 @@ export function readDepth(renderer, frame, grid, cfg) {
       ),
     };
   }
-  const { texture, target, bytes, quad } = reader;
+  const { texture, target, bytes, quad, n } = reader;
   texture.sourceTexture = depth.texture;
   quad.material.uniforms.depthMap.value = texture;
   quad.material.uniforms.layer.value = depth.imageIndex ?? 0;
@@ -71,7 +79,8 @@ export function readDepth(renderer, frame, grid, cfg) {
     quad.render(renderer);
     // Read while target is still the current one. After the restore three.js would re-bind the
     // wrong framebuffer of a multisampled headset target and that frame would come out empty.
-    // shortcut: waits for the GPU twice a second; if frames drop, switch to readRenderTargetPixelsAsync.
+    // shortcut: waits for the GPU at every read (five a second); if frames drop, switch to
+    // readRenderTargetPixelsAsync, or read less often (?depthMs=350).
     renderer.readRenderTargetPixels(target, 0, 0, n, n, bytes);
   } finally {
     // index.js carries on after an error here, so the headset's target must be back either way.
@@ -79,18 +88,23 @@ export function readDepth(renderer, frame, grid, cfg) {
     renderer.xr.enabled = true;
   }
 
-  const { depthNear, depthFar } = depth;
+  // Two bytes a sample -> metres, from a table made for this image's near and far planes (they
+  // do not change from read to read; if they ever do, the table is made again).
+  if (reader.near !== depth.depthNear || reader.far !== depth.depthFar) {
+    reader.near = depth.depthNear;
+    reader.far = depth.depthFar;
+    reader.metres = depthTable(depth.depthNear, depth.depthFar);
+  }
+  const metres = reader.metres;
   addDepthView(
     grid,
-    (u, v) => {
-      const k = (Math.floor(v * n) * n + Math.floor(u * n)) * 4; // readPixels rows run bottom to top, like v
-      return depthBufferToMeters((bytes[k] + bytes[k + 1] / 255) / 255, depthNear, depthFar);
-    },
+    // sample (i, j) of n x n: readPixels rows run bottom to top, like v
+    (u, v, i, j) => metres[(bytes[(j * n + i) * 4] << 8) | bytes[(j * n + i) * 4 + 1]],
     // The depth image's own camera (core/xr.js asks for it with matchDepthView: false); the eye's
     // on a browser that gives none.
     depth.projectionMatrix ?? view.projectionMatrix,
     (depth.transform ?? view.transform).matrix,
-    cfg,
+    reader.cfg,
   );
   return true;
 }

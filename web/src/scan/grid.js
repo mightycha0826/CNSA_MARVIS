@@ -22,6 +22,7 @@ export const UNKNOWN = 255;
 /**
  * cfg: thingMinM, headM, floorNoiseM, dropMinM (0 or absent: drops are not marked), minPoints, setScans, clearScans, forgetScans, and for
  * settling: settleScans, resettleScans, giveUpScans, leaveM, vantageM, depthRangeM, bodyM, viewHalfDeg (SCAN in index.js).
+ * commitAll: commit() looks at every cell every time, as it did before 2026-11-15 (the test that compares the two).
  *
  * Settling (cfg.settleScans > 0): a cell that has been read settleScans times in a row with the
  * same answer is settled and is not read any more: points that fall into it are dropped. So is
@@ -56,6 +57,15 @@ export function createGrid(cols, rows, cellM, originXZ, cfg) {
   let settledCount = 0;
   const cosHalf = Math.cos(((cfg.viewHalfDeg ?? 40) * Math.PI) / 180);
   const dropBelow = cfg.dropMinM > 0 ? -cfg.dropMinM : -Infinity; // ground lower than this is a drop
+
+  // What a commit has to look at. A cell that got no point in this read, has no sighting that
+  // waits for its next one, and lies out of the view's reach is left exactly as it is by
+  // commit(), so its loop runs over the box around the other cells only: a few thousand within
+  // reach of the wearer, of the 65,536 in the scan's window, five times a second.
+  // A box is [col0, col1, row0, row1]; it is empty while col0 > col1.
+  const touched = [cols, -1, rows, -1]; // cells that got a point since the last commit
+  const waiting = [cols, -1, rows, -1]; // cells that hold a sighting the next read has to confirm or drop
+  let whole = true; // the next commit looks at every cell: the first one, and after cells were moved or laid back
 
   // Whether cell i is where the depth image can see it from `view` { x, z, dirX, dirZ }: within
   // range along the floor and within viewHalfDeg of where the wearer faces. (dirX, dirZ) is the
@@ -99,6 +109,11 @@ export function createGrid(cols, rows, cellM, originXZ, cfg) {
       if ((y > cfg.thingMinM && y < cfg.headM) || y < dropBelow) obstacle[i]++;
       // Between floorNoiseM and thingMinM (and as far below the floor) a noisy depth point could be either: it counts as neither.
       else if (Math.abs(y) <= cfg.floorNoiseM) floor[i]++;
+      else return;
+      if (col < touched[0]) touched[0] = col;
+      if (col > touched[1]) touched[1] = col;
+      if (row < touched[2]) touched[2] = row;
+      if (row > touched[3]) touched[3] = row;
     },
 
     /**
@@ -111,48 +126,84 @@ export function createGrid(cols, rows, cellM, originXZ, cfg) {
      */
     commit(view = null) {
       let changed = false;
-      for (let i = 0; i < n; i++) {
-        if (settled[i]) continue;
-        let next = cells[i];
-        const answered = obstacle[i] >= cfg.minPoints || (floor[i] >= cfg.minPoints && obstacle[i] === 0);
-        if (obstacle[i] >= cfg.minPoints) {
-          // Seen in setScans reads in a row before it counts: someone walking past and stray depth do not.
-          if (sightings[i] < cfg.setScans) sightings[i]++;
-          if (sightings[i] === cfg.setScans) {
-            hold[i] = cfg.clearScans;
-            next = OBSTACLE;
-          }
-        } else if (floor[i] >= cfg.minPoints && obstacle[i] === 0) {
-          sightings[i] = 0;
-          if (hold[i]) hold[i]--;
-          next = hold[i] ? OBSTACLE : PASSABLE;
-        } else if (next !== OBSTACLE) {
-          sightings[i] = 0; // not seen as a thing in this read: the count starts over
-        }
-        if (obstacle[i] || floor[i]) unseen[i] = 0;
-        else if (cfg.forgetScans > 0 && unseen[i] < cfg.forgetScans && ++unseen[i] === cfg.forgetScans) {
-          sightings[i] = hold[i] = 0;
-          if (next === OBSTACLE) next = UNKNOWN;
-        }
-        if (settling) {
-          // The read says what the cell already is: a thing seen where an obstacle stands,
-          // bare floor seen where the floor is clear. (A first sighting of something on clear
-          // floor is an answer too, but the opposite one.)
-          const thing = obstacle[i] >= cfg.minPoints;
-          if (answered && next === cells[i] && next === (thing ? OBSTACLE : PASSABLE)) {
-            idle[i] = 0;
-            if (++same[i] >= cfg.settleScans) settle(i, 0, view?.now ?? 0);
-          } else if (answered || next !== cells[i]) {
-            same[i] = idle[i] = 0; // still changing, or an obstacle being confirmed
-          } else if (view && cfg.giveUpScans > 0 && inView(i, view)) {
-            if (++idle[i] >= cfg.giveUpScans) settle(i, view.sig || 1, view.now ?? 0); // in view all this time and nothing to see
+      // The box to look at: every cell, or the cells that got a point, those with a sighting
+      // waiting, and those the view reaches (which may give up for want of an answer).
+      let c0 = 0;
+      let c1 = cols - 1;
+      let r0 = 0;
+      let r1 = rows - 1;
+      if (!(whole || cfg.commitAll || cfg.forgetScans > 0)) { // forgetScans counts reads for every cell out of sight
+        c0 = Math.min(touched[0], waiting[0]);
+        c1 = Math.max(touched[1], waiting[1]);
+        r0 = Math.min(touched[2], waiting[2]);
+        r1 = Math.max(touched[3], waiting[3]);
+        if (view && settling && cfg.giveUpScans > 0) {
+          const seen = reach(view);
+          if (seen[0] <= seen[1] && seen[2] <= seen[3]) {
+            c0 = Math.min(c0, seen[0]);
+            c1 = Math.max(c1, seen[1]);
+            r0 = Math.min(r0, seen[2]);
+            r1 = Math.max(r1, seen[3]);
           }
         }
-        if (next !== cells[i]) {
-          cells[i] = next;
-          changed = true;
+      }
+      whole = false;
+      touched[0] = waiting[0] = cols;
+      touched[2] = waiting[2] = rows;
+      touched[1] = touched[3] = waiting[1] = waiting[3] = -1;
+      for (let r = r0; r <= r1; r++) {
+        for (let c = c0; c <= c1; c++) {
+          const i = r * cols + c;
+          if (settled[i]) continue;
+          let next = cells[i];
+          const answered = obstacle[i] >= cfg.minPoints || (floor[i] >= cfg.minPoints && obstacle[i] === 0);
+          if (obstacle[i] >= cfg.minPoints) {
+            // Seen in setScans reads in a row before it counts: someone walking past and stray depth do not.
+            if (sightings[i] < cfg.setScans) sightings[i]++;
+            if (sightings[i] === cfg.setScans) {
+              hold[i] = cfg.clearScans;
+              next = OBSTACLE;
+            }
+          } else if (floor[i] >= cfg.minPoints && obstacle[i] === 0) {
+            sightings[i] = 0;
+            if (hold[i]) hold[i]--;
+            next = hold[i] ? OBSTACLE : PASSABLE;
+          } else if (next !== OBSTACLE) {
+            sightings[i] = 0; // not seen as a thing in this read: the count starts over
+          }
+          if (obstacle[i] || floor[i]) unseen[i] = 0;
+          else if (cfg.forgetScans > 0 && unseen[i] < cfg.forgetScans && ++unseen[i] === cfg.forgetScans) {
+            sightings[i] = hold[i] = 0;
+            if (next === OBSTACLE) next = UNKNOWN;
+          }
+          if (settling) {
+            // The read says what the cell already is: a thing seen where an obstacle stands,
+            // bare floor seen where the floor is clear. (A first sighting of something on clear
+            // floor is an answer too, but the opposite one.)
+            const thing = obstacle[i] >= cfg.minPoints;
+            if (answered && next === cells[i] && next === (thing ? OBSTACLE : PASSABLE)) {
+              idle[i] = 0;
+              if (++same[i] >= cfg.settleScans) settle(i, 0, view?.now ?? 0);
+            } else if (answered || next !== cells[i]) {
+              same[i] = idle[i] = 0; // still changing, or an obstacle being confirmed
+            } else if (view && cfg.giveUpScans > 0 && inView(i, view)) {
+              if (++idle[i] >= cfg.giveUpScans) settle(i, view.sig || 1, view.now ?? 0); // in view all this time and nothing to see
+            }
+          }
+          if (next !== cells[i]) {
+            cells[i] = next;
+            changed = true;
+          }
+          obstacle[i] = floor[i] = 0;
+          // A sighting that has not made an obstacle yet: the next commit must come back here,
+          // points or not, to count it on or to drop it.
+          if (sightings[i] && next !== OBSTACLE) {
+            if (c < waiting[0]) waiting[0] = c;
+            if (c > waiting[1]) waiting[1] = c;
+            if (r < waiting[2]) waiting[2] = r;
+            if (r > waiting[3]) waiting[3] = r;
+          }
         }
-        obstacle[i] = floor[i] = 0;
       }
       return changed;
     },
@@ -233,6 +284,7 @@ export function createGrid(cols, rows, cellM, originXZ, cfg) {
       origin = [nextOriginXZ[0], nextOriginXZ[1]];
       settledCount = 0;
       for (let i = 0; i < n; i++) settledCount += settled[i];
+      whole = true; // every cell has moved: the boxes commit() keeps are of the old places
     },
 
     /**
@@ -288,6 +340,7 @@ export function createGrid(cols, rows, cellM, originXZ, cfg) {
           if (settled[i]) settledCount++;
         }
       }
+      whole = true; // counts were laid back outside any read: let the next commit look at everything once
     },
 
     get settledCount() {
@@ -342,10 +395,17 @@ export function mergeLayers(room, live) {
   return { cells, obstacles, floor, depth };
 }
 
+// Scratch for addDepthView, one entry per sample column: the part of each sample's direction
+// that depends on the column alone. Grown when a larger sample count comes; never per read.
+let colX = new Float64Array(0);
+let colY = new Float64Array(0);
+let colZ = new Float64Array(0);
+
 /**
  * Add one eye's depth image to the grid.
- * @param depthAt (u, v) -> distance from the camera plane in metres; u, v in 0..1 with (0, 0) at
- *                the bottom left of the image; 0 when unknown
+ * @param depthAt (u, v, i, j) -> distance from the camera plane in metres; u, v in 0..1 with
+ *                (0, 0) at the bottom left of the image, and i, j the same sample as column and
+ *                row (0 .. depthSamples - 1), for a caller that holds exactly that many; 0 when unknown
  * @param cfg depthSamples, depthRangeM, bodyM, cellM, thingMinM, dropMinM
  */
 export function addDepthView(grid, depthAt, P, M, cfg) {
@@ -354,50 +414,78 @@ export function addDepthView(grid, depthAt, P, M, cfg) {
   const farthest = cfg.depthRangeM ** 2;
   const nearestThing = (cfg.bodyM + 2 * cfg.cellM) ** 2;
   const farthestThing = (cfg.depthRangeM - 2 * cfg.cellM) ** 2;
+  const thingMinM = cfg.thingMinM;
+  const dropMinM = cfg.dropMinM > 0 ? cfg.dropMinM : 0;
+  const halfCell = cfg.cellM * 0.5;
+  // The eye's place and the three columns of its rotation, as plain numbers: this loop runs
+  // for every sample of every read (depthSamples squared: 82,944 times at 288), and reading them out of the matrices
+  // each time was most of what a read cost.
+  const ox = M[12];
+  const oy = M[13];
+  const oz = M[14];
+  const m0 = M[0], m1 = M[1], m2 = M[2];
+  const m4 = M[4], m5 = M[5], m6 = M[6];
+  const m8 = M[8], m9 = M[9], m10 = M[10];
+  const p0 = P[0], p5 = P[5], p8 = P[8], p9 = P[9];
+  // Undo the projection: the eye-space point at screen position (-1..1) and depth d is
+  // d * ((2u - 1 + P[8]) / P[0], (2v - 1 + P[9]) / P[5], -1). Holds for the off-centre frustum
+  // of a headset eye (P[8], P[9]). In room coordinates that is the eye plus d times a direction
+  // which is a sum of a part for the sample's column and a part for its row.
+  if (colX.length < s) {
+    colX = new Float64Array(s);
+    colY = new Float64Array(s);
+    colZ = new Float64Array(s);
+  }
+  for (let i = 0; i < s; i++) {
+    const ax = (2 * ((i + 0.5) / s) - 1 + p8) / p0;
+    colX[i] = m0 * ax;
+    colY[i] = m1 * ax;
+    colZ[i] = m2 * ax;
+  }
   for (let j = 0; j < s; j++) {
+    const v = (j + 0.5) / s;
+    const ay = (2 * v - 1 + p9) / p5;
+    const rowX = m4 * ay - m8;
+    const rowY = m5 * ay - m9;
+    const rowZ = m6 * ay - m10;
     for (let i = 0; i < s; i++) {
-      const u = (i + 0.5) / s;
-      const v = (j + 0.5) / s;
-      const d = depthAt(u, v);
+      const d = depthAt((i + 0.5) / s, v, i, j);
       if (!(d > 0)) continue;
-      // Undo the projection: the eye-space point at screen position (-1..1) and depth d. Holds
-      // for the off-centre frustum of a headset eye (P[8], P[9]).
-      const x = (d * (2 * u - 1 + P[8])) / P[0];
-      const y = (d * (2 * v - 1 + P[9])) / P[5];
-      const wx = M[0] * x + M[4] * y - M[8] * d + M[12];
-      const wz = M[2] * x + M[6] * y - M[10] * d + M[14];
+      // The point seen, measured from the eye (hx, hy, hz), in room axes.
+      const hx = d * (colX[i] + rowX);
+      const hz = d * (colZ[i] + rowZ);
       // Both limits are measured along the floor from the headset, so a cell is in or out for
       // the things standing in it and for the floor under them alike. Measured from the eye, a
       // chair would be marked farther out than the floor that later has to clear it.
-      const along = (wx - M[12]) ** 2 + (wz - M[14]) ** 2;
-      const wy = M[1] * x + M[5] * y - M[9] * d + M[13];
-      if (cfg.dropMinM > 0 && wy < -cfg.dropMinM && Number.isFinite(wy) && M[13] > 0) {
+      const along = hx * hx + hz * hz;
+      const wy = oy + d * (colY[i] + rowY);
+      if (dropMinM > 0 && wy < -dropMinM && Number.isFinite(wy) && oy > 0) {
         // The ray went through where the floor should be and met ground lower down: the floor
         // ends here. It is missing from where the ray crossed floor level to where it landed,
         // and that whole stretch is marked: the near part of the lower ground is hidden behind
         // the edge, and would otherwise stay unknown, which the route may cross.
         // Limits as for things, measured where the floor is missing, not where the ray landed:
         // the bottom of a deep drop is far away while its edge is at the wearer's feet.
-        const t = M[13] / (M[13] - wy); // the part of the way from the eye to the point at which the ray is at floor level
-        const ex = (wx - M[12]) * t;
-        const ez = (wz - M[14]) * t;
-        const stretch = Math.hypot(wx - M[12] - ex, wz - M[14] - ez);
-        const steps = Math.min(40, Math.ceil(stretch / (cfg.cellM * 0.5)));
+        const t = oy / (oy - wy); // the part of the way from the eye to the point at which the ray is at floor level
+        const ex = hx * t;
+        const ez = hz * t;
+        const stretch = Math.hypot(hx - ex, hz - ez);
+        const steps = Math.min(40, Math.ceil(stretch / halfCell));
         for (let k = 0; k <= steps; k++) {
           const f = steps ? k / steps : 0;
-          const px = ex + (wx - M[12] - ex) * f;
-          const pz = ez + (wz - M[14] - ez) * f;
+          const px = ex + (hx - ex) * f;
+          const pz = ez + (hz - ez) * f;
           const a = px * px + pz * pz;
           if (a > farthestThing) break;
-          if (a >= nearestThing) grid.add(M[12] + px, wy, M[14] + pz);
+          if (a >= nearestThing) grid.add(ox + px, wy, oz + pz);
         }
         continue;
       }
       if (!(along >= nearest && along <= farthest)) continue; // the wearer's own body, or too far to trust
       // Things count two cells inside those limits only. A cell the limit cuts through would be
       // marked from the strip that is in range, and that strip of floor is too thin to clear it.
-      if (wy > cfg.thingMinM && !(along >= nearestThing && along <= farthestThing)) continue;
-      grid.add(wx, wy, wz);
+      if (wy > thingMinM && !(along >= nearestThing && along <= farthestThing)) continue;
+      grid.add(ox + hx, wy, oz + hz);
     }
   }
 }
@@ -410,4 +498,18 @@ export function addDepthView(grid, depthAt, P, M, cfg) {
 export function depthBufferToMeters(b, near, far) {
   if (!(b > 0 && b < 1)) return 0;
   return far > near && far !== Infinity ? (near * far) / (far - b * (far - near)) : near / (1 - b);
+}
+
+/**
+ * The same conversion for every value a depth sample can have, worked out once: the depth image
+ * is read as two bytes a sample (depth.js), so there are 65,536 of them, and a read asks for
+ * more samples than that (82,944 at 288 a side). table[high * 256 + low] is the distance in
+ * metres for the bytes (high, low).
+ */
+export function depthTable(near, far) {
+  const table = new Float32Array(65536);
+  for (let high = 0; high < 256; high++) {
+    for (let low = 0; low < 256; low++) table[high * 256 + low] = depthBufferToMeters((high + low / 255) / 255, near, far);
+  }
+  return table;
 }
