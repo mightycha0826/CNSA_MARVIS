@@ -1,6 +1,6 @@
-# Submission text (draft)
+# Submission text
 
-> The text below is split by the field names of the submission form; paste each part into its field. The notes above the line are for the team and are not submitted.
+> The text of Project Marvis for the submission form, split by the form's field names; paste each part into its field. The notes above the line are for the team and are not submitted. The letters A to F are the team's six parts ([README, Team](../README.md#team)).
 
 ## Submission rules (read from the official Project Submission Guide, 2026-11-14)
 
@@ -17,10 +17,10 @@ Source: https://www.spaceappschallenge.org/resources/project-submission-guide/
 
 ## Before submitting
 
-The text below the line has no `[TODO]` marks left. It describes the project **as on `main` at 16:07 on 2026-11-14**. Check these before pressing Submit:
+The text below the line has no `[TODO]` marks left. It describes the project **as on `main` at 16:07 on 2026-11-14**. Most of what was added after that is not in it: waypoints and picking places on the map, the vitals over the right palm, the rescue signal, the monitor page and its recording, the field map kept on the Jetson. Those are described in the [README](../README.md) and in [USAGE.md](USAGE.md). Check these before pressing Submit:
 
-- [ ] **Demo link.** A screen recording of the app is in the repository, [demo/marswalk-visor-demo.mp4](demo/marswalk-visor-demo.mp4); whether it is 30 s or less has not been checked here. The only thing still missing. Replace `DEMO LINK HERE` in "Link to Project Demo" with the public link (video of 30 s or less, or 7 slides or fewer).
-- [ ] **Headset results.** Nothing in the repository records a run on the Quest 3, so "What has been tested" says the headset-only parts do not run in a desktop browser. Once the team has run them on the headset, replace that bullet with what actually happened (what worked, what did not).
+- [ ] **Demo link.** A screen recording of the app is in the repository, [demo/marswalk-visor-demo.mp4](demo/marswalk-visor-demo.mp4). It is 1 min 17 s long, so as it is it does not fit the rule above: the submitted demo needs a cut of 30 s or less (or 7 slides or fewer). Replace `DEMO LINK HERE` in "Link to Project Demo" with the public link of that cut.
+- [ ] **Headset results.** "What has been tested" still says only that the headset-only parts do not run in a desktop browser. The app has since been run on the Quest 3 ([README](../README.md#verification-level)); replace that bullet with what actually happened (what worked, what did not).
 - [ ] **If a feature changes before the deadline, change its sentence.** The table below says what the text assumes.
 - [ ] **Use of Super Intelligence.** Filled in from the repository (commit records and file contents). Each member should confirm it and add any tool that is not listed.
 - [ ] Open the demo link and the final project link in a private window.
@@ -37,11 +37,11 @@ The text below the line has no `[TODO]` marks left. It describes the project **a
 | Palm map with four layers, Curiosity's path, waypoints | D | Built |
 | Route planner on the slope layer, return to base on a critical alert | D | Built. 18 tests pass. The route is drawn on the map |
 | Wearer's position on the map from head tracking | B | Built |
-| Field obstacle scan (`web/src/scan/`) | A | Built. It uses the room geometry the Quest 3 stores where there is one, with the headset's live depth image laid over it. **On our headset no room geometry was available in any session, so the field map was built from live depth alone**, which runs there (2.5 m around the wearer at about three reads a second in the sessions run). The code now reads 4 m at five reads a second: that range and rate are **not yet checked on the headset** |
+| Field obstacle scan (`web/src/scan/`) | A | Built. It uses the room geometry the Quest 3 stores where there is one, with the headset's live depth image laid over it. **On our headset no room geometry was available in any session, so the field map was built from live depth alone**, which runs there (2.5 m around the wearer at about three reads a second in the sessions run). The code now reads 5 m at ten reads a second: that range and rate are **not yet checked on the headset** |
 | Field map mode: 1 : 1 relief map, scanned structure standing on it, arrows on the floor (`web/src/field/`) | A, B | Built. 6 tests on its path planner pass |
 | Suit hub, temperature alerts, voice assistant, firmware | E | Built. Voice measured with synthetic speech only. The temperature sensor is wired and read by the hub; warming it by hand raises the alerts |
 | Destination photo on the HUD | F | **Not built**. The photos are ready in `pov.json` |
-| Run on the Quest 3 headset | all | **Not recorded anywhere in the repository** |
+| Run on the Quest 3 headset | all | Run through the Jetson hub during the hackathon. **No record per feature was kept** ([README](../README.md#verification-level)) |
 
 Where the numbers come from: every data number in the text was computed from the actual files by `data-pipeline/validate.py` (`data-pipeline/validation_report.json`); the route numbers are from `web/src/nav/README.md`; the voice numbers are from `jetson/README.md`; the scan and field-mode numbers are the constants in `web/src/scan/index.js` and `web/src/field/index.js`. The files are described in [DATA.md](DATA.md) and the source data in [RESOURCES.md](RESOURCES.md).
 
@@ -49,11 +49,11 @@ Where the numbers come from: every data number in the text was computed from the
 
 ## Project Name
 
-MARVIS
+Project Marvis
 
 ## High-Level Project Summary
 
-**MARVIS** is a helmet heads-up display for an astronaut walking on Mars. It layers data from four NASA Mars missions into one map of a single walkable site, plans a route across it that a person in a spacesuit could walk, rewrites the map with what the helmet itself sees nearby, and keeps the crew's safety data in view while their hands stay free.
+**Project Marvis** is a helmet heads-up display for an astronaut walking on Mars. It layers data from four NASA Mars missions into one map of a single walkable site, plans a route across it that a person in a spacesuit could walk, rewrites the map with what the helmet itself sees nearby, and keeps the crew's safety data in view while their hands stay free.
 
 Orbital maps of Mars are built for regional views. At the scale of a spacewalk they run out of detail: across our 2 km site the best optical image resolves about 0.64 m per pixel, and the thermal image is only 25 pixels wide. NASA's own experience at our site shows the gap. When the Curiosity rover reached a pale patch of ground in Gediz Vallis channel, it found a field of pure sulfur stones that, as JPL reported, had been "too small for MRO's High-Resolution Imaging Science Experiment (HiRISE) to see."
 
@@ -106,7 +106,7 @@ A Python pipeline downloads the NASA data, cuts every source to the same map are
 
 The route planner works in real map meters on the terrain grid. Each cell costs its length times (1 + (slope / 15°)²); cells steeper than 20° are closed. It precomputes the cheapest way to each destination from every cell, so a new request or a change in the map is answered quickly, and it runs in a background worker so the display does not stall.
 
-The field map takes its obstacles from two sources on the same 10 cm cells. One is the model of the surroundings that the headset already keeps, read through WebXR mesh and plane detection: every surface between 0.15 m and 1.9 m above the ground blocks the cell under it; surfaces near the ground mark the cell as clear. The other is the headset's live depth image, read several times a second and laid over the same cells. In the sessions we ran, the headset had no stored model of the room, so the map came from the live depth image alone. A second, small planner finds the way back to the marked target around those cells. In our demo the surroundings are a room, so to the map it is as if a structure had appeared on Mars; on Mars the same step would add the rocks and ledges that orbital data cannot show.
+The field map takes its obstacles from two sources on the same 10 cm cells. One is the model of the surroundings that the headset already keeps, read through WebXR mesh and plane detection: every surface between 0.3 m and 1.9 m above the ground blocks the cell under it; surfaces near the ground mark the cell as clear. The other is the headset's live depth image, read several times a second and laid over the same cells. In the sessions we ran, the headset had no stored model of the room, so the map came from the live depth image alone. A second, small planner finds the way back to the marked target around those cells. In our demo the surroundings are a room, so to the map it is as if a structure had appeared on Mars; on Mars the same step would add the rocks and ledges that orbital data cannot show.
 
 Everything outside the headset runs on an NVIDIA Jetson, standing in for the suit's computer. It serves the app to the headset over HTTPS, reads an Arduino temperature sensor (standing in for a suit sensor) once a second, decides when an alert starts and clears, and handles voice. Voice activity detection (Silero VAD), speech recognition (SenseVoice) and speech synthesis (Supertonic 3) all run on the Jetson's CPU through sherpa-onnx. A recognized sentence is matched to one of a fixed set of commands by a table of phrases the team wrote, not by a language model, so the assistant only does what is on the list.
 
@@ -123,7 +123,7 @@ Everything outside the headset runs on an NVIDIA Jetson, standing in for the sui
 
 ### Limits of the field map
 
-- Where the headset has stored a model of the surroundings the map uses it; in our sessions it had none, and the map was built from the live depth image alone, which reaches a few metres around the wearer (2.5 m in the sessions run; the code has since been set to 4 m and to read more often, which is written and passes its tests but is not yet checked on the headset).
+- Where the headset has stored a model of the surroundings the map uses it; in our sessions it had none, and the map was built from the live depth image alone, which reaches a few metres around the wearer (2.5 m in the sessions run; the code has since been set to 5 m and to read more often, which is written and passes its tests but is not yet checked on the headset).
 - It shows that something is in the way, not what it is.
 - The scan is laid over the NASA map at an assumed position (base). We do not locate the astronaut on Mars from the scan.
 
@@ -151,7 +151,7 @@ Everything outside the headset runs on an NVIDIA Jetson, standing in for the sui
 Yes. We used AI tools throughout, as tools to carry out and check the work.
 
 - **Claude (Anthropic), mostly through the Claude Code coding agent**, was used to write and debug code (the data pipeline and its checks, the web app, the suit hub), to download, process and verify the NASA data, to search for and read source material, to translate and draft documentation and this description, and to build the HUD design mockup. Team members directed the work, reviewed the results and decided what to keep.
-- **AI-assisted code and data are acknowledged in the repository:** commits made with the assistant carry a "Co-Authored-By: Claude" line, the data scripts and the data guide (`docs/DATA.md`) state that they were written with AI assistance, and each data file records the NASA source address it came from.
+- **AI-assisted code and data are acknowledged in the repository:** the README, the data scripts and the data guide (`docs/DATA.md`) state that they were written with AI assistance, and each data file records the NASA source address it came from.
 - **Speech models inside the project:** the voice assistant uses a voice activity model (Silero VAD), a speech recognition model (SenseVoice) and a speech synthesis model (Supertonic 3). Every sentence the assistant speaks is synthesized audio, and so are the sample recordings in `jetson/samples/`. The commands it accepts are matched by a table of phrases written by the team.
 - **No AI-generated images or video appear in the project.** The figures in `docs/figures/` are plots of NASA data drawn by our script; a line under each says the script was written with AI assistance.
 - **All NASA data values shown in the project come from the sources listed below, not from AI.** No value was generated or filled in by a model.

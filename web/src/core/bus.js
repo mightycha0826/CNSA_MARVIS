@@ -1,4 +1,4 @@
-// Event bus. Modules talk to each other only over this bus (README section 9, rule 2).
+// Event bus. Modules talk to each other only over this bus (docs/DEVELOPMENT.md section 2, rule 2).
 // Section 3 of docs/INTERFACES.md is the contract for the event names and payload formats.
 //
 //   import { bus } from '../core/bus.js';

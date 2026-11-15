@@ -35,7 +35,7 @@ export function initDebug({ el, mock, keys }) {
       return `<tr><td>${name}</td><td class="n">${counts.get(name)}</td><td class="p" title='${p.replaceAll("'", '&#39;')}'>${p}</td></tr>`;
     });
     el.innerHTML =
-      `<h1>MARVIS <span class="tag">${mockOn.length ? `mock: ${mockOn.join(', ')}` : 'live link'}</span></h1>` +
+      `<h1>Project Marvis <span class="tag">${mockOn.length ? `mock: ${mockOn.join(', ')}` : 'live link'}</span></h1>` +
       `<table>${rows.join('')}</table>` +
       (keys ? `<div style="margin-top:6px;color:#9aa0a6">${keys}</div>` : '') +
       `<div style="margin-top:6px"><a href="./check.html">Device check page</a></div>`;

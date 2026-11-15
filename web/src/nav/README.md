@@ -1,5 +1,7 @@
 # Planetary map and route analysis (D)
 
+The letters A to F are the team's six parts ([README, Team](../../../README.md#team)).
+
 The planner operates on C's terrain grid in physical map metres. It has no room size, room coordinate model, or dependency on `layerSet.demo`. `coordinates.js` provides one generic map-local Cartesian frame: east is +x, north is -z, and the origin is the centre of the map. A cell is exactly `grid.cellSizeM` metres in both horizontal directions. The 3D map can be enlarged or held in a hand without changing any route cost, distance or position.
 
 ## C data used here

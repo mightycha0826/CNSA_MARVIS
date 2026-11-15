@@ -1,6 +1,6 @@
 # Jetson ↔ Quest 3 connection guide (role E)
 
-How to connect the Jetson Orin Nano Super and the Quest 3 so the architecture in [README section 4](../README.md) exists for real.
+How to connect the Jetson Orin Nano Super and the Quest 3 so the architecture in the [README](../README.md#how-it-is-built) exists for real.
 
 ```
 [Arduino] --USB serial--> [Jetson] <==Wi-Fi (Jetson hotspot)==> [Quest 3 browser]
@@ -8,7 +8,7 @@ How to connect the Jetson Orin Nano Super and the Quest 3 so the architecture in
                            - wss://10.42.0.1:8443/ws      hub (INTERFACES.md section 4)
 ```
 
-**E does not occupy the headset.** There is one headset, shared by A, B and D ([ROLES.md](../docs/ROLES.md)). E builds the Jetson side to the end with **a laptop browser or the fake Quest client**, and hands the headset users a state where "opening one address" is all that is left. Do the headset steps here only after every check in section 0 passes.
+**E does not occupy the headset.** There is one headset, shared by A, B and D (the letters are the team's six parts: [README, Team](../README.md#team)). E builds the Jetson side to the end with **a laptop browser or the fake Quest client**, and hands the headset users a state where "opening one address" is all that is left. Do the headset steps here only after every check in section 0 passes.
 
 **Three key decisions**
 
@@ -39,20 +39,14 @@ The fake Quest client is [`tools/fake_quest.py`](tools/fake_quest.py). It plays 
 cd jetson
 .venv/bin/python -m marswalk.hub --dev                        # terminal 1
 .venv/bin/python tools/fake_quest.py --temp 31 --temp 36 --temp 25 \
-    --text "take me to the survey site" --wav samples/00_nav_start.wav   # terminal 2
+    --text "take me to the survey site" --wav samples/01_nav_start.wav   # terminal 2
 ```
 
 `tools/voice_selftest.py --save samples` writes synthetic recordings of every [voice command](../docs/INTERFACES.md). Also record each sentence once in the team's own voices into `samples/`; measure STT accuracy and latency (end of speech → `voice.command` within 2–3 s) with those files.
 
 ### When the headset is used (not by E)
 
-E does not borrow the headset. **B runs the checks below during B's own headset time**, following the table in section 4. E only watches the Jetson log.
-
-| When | Who | What | Time |
-|---|---|---|---|
-| 0–3 h, when B confirms "the AR screen shows" | B | Rows 1–3 of the section 4 table (hotspot, HTTPS, `hello`) | 5 min |
-| First integration | B | Rows 4–6 (temperature, microphone, TTS) | 10 min |
-| 24–36 h integration | Everyone | Demo flow steps 1–4 | Part of integration |
+E does not borrow the headset. **B runs the checks of the section 4 table during B's own headset time**: rows 1–3 (hotspot, HTTPS, `hello`) as soon as the AR screen shows, rows 4–6 (temperature, microphone, TTS) at the first integration. E only watches the Jetson log.
 
 If a check fails, the headset goes straight back to B and E reproduces the problem with the section 0 methods. For problems that only happen on the headset (Quest browser certificate or microphone policy), get the console log from B.
 
@@ -106,7 +100,7 @@ Do this after all section 0 checks pass on a laptop. Hand this section to B.
 
 1. In the Quest browser, enter `https://10.42.0.1:8443/`.
 2. "Your connection is not private" → Advanced → Proceed. (Once per headset; again if browser data is cleared.)
-3. When the page loads, press "Start AR" → allow microphone and hand tracking.
+3. When the page loads, press **Mars map** or **Field map** → allow microphone and hand tracking.
 4. A `hello` message (`{"client":"quest"}`) in the Jetson log means the connection works.
 
 Check in the order below, **one thing at a time**, so it is obvious where it stops.
@@ -116,7 +110,7 @@ Check in the order below, **one thing at a time**, so it is obvious where it sto
 | 1 | Headset joined the hotspot | Quest Wi-Fi screen shows `10.42.0.x` | Password; try 2.4 GHz |
 | 2 | HTTPS page loads | Page shows after the warning | Is `10.42.0.1` in the certificate SAN? Is the server on `0.0.0.0`? |
 | 3 | WebSocket connects | `hello` on the Jetson | The address `link.js` uses (browser console) |
-| 4 | Telemetry flows | Status panel temperature changes every second | Jetson send log |
+| 4 | Telemetry flows | The ambient temperature tile changes every second | Jetson send log |
 | 5 | Microphone arrives | Binary frames after `mic.begin` | Is the page HTTPS? Was permission granted? |
 | 6 | TTS is audible | Sound on the headset after `tts.begin` → PCM → `tts.end` | Sample rate (22050) matches |
 
@@ -145,7 +139,7 @@ Open `http://localhost:8080/?jetson=ws://localhost:8080/ws` in the headset brows
 
 **Use 2 — view the headset browser console**
 
-For A, B and D when chasing "errors that only happen on the device" ([ROLES.md](../docs/ROLES.md)). Plug the developer-mode headset into a PC (or the Jetson) over USB and open `chrome://inspect/#devices` in that PC's Chrome: the Quest browser tabs are listed. Copy only the relevant console lines to the AI.
+For A, B and D when chasing errors that only happen on the device. Plug the developer-mode headset into a PC (or the Jetson) over USB and open `chrome://inspect/#devices` in that PC's Chrome: the Quest browser tabs are listed. Copy only the relevant console lines to the AI.
 
 **Use 3 — wireless adb**
 
@@ -169,18 +163,18 @@ When the wearer walks out of the Quest's boundary, the headset pauses the app an
 
 ## 6. Demo day checklist
 
-- [ ] Powering on the Jetson brings up the `MARSWALK` hotspot by itself
-- [ ] The hub starts by itself as a systemd service (`jetson/marswalk-hub.service`)
+- [ ] Powering on the Jetson brings up the `MARSWALK` hotspot by itself (the **Start MARVIS** icon brings it up if it is not)
+- [ ] One double-click on **Start MARVIS** on the Jetson's desktop starts the hub, the monitor page and the wait for the headset (`jetson/tools/start_all.sh`, [README](README.md#one-click-start)); or the hub starts by itself as a systemd service (`jetson/marswalk-hub.service`)
 - [ ] The headset joins `MARSWALK` by itself (turn off auto-connect for other networks)
 - [ ] `https://10.42.0.1:8443/` is bookmarked in the headset browser
 - [ ] The certificate warning is already accepted (do not clear browser data after the rehearsal)
 - [ ] Turning off the Jetson or the hotspot raises the `link-lost` alert on the HUD
 - [ ] Jetson and headset within 10 m, no metal objects between them
-- [ ] Jetson in performance mode: `sudo nvpmodel -m 0` then `sudo jetson_clocks` (speech model speed)
+- [ ] Jetson in performance mode (speech model speed): `nvpmodel -q` says `MAXN_SUPER`, then `sudo jetson_clocks`. On this board `MAXN_SUPER` is `sudo nvpmodel -m 2`; mode 0 is the 15 W mode. The summary of `start_all.sh` shows the mode
 
-## 7. To agree with B
+## 7. What was agreed with B
 
-| Item | Proposal |
+| Item | As built |
 |---|---|
 | Where the web app is served | The Jetson, same origin `https://10.42.0.1:8443/` |
 | WebSocket address | `link.js` default `wss://<page host>:8443/ws` (already so); `?jetson=` overrides |
@@ -192,5 +186,5 @@ When the wearer walks out of the Quest's boundary, the headset pauses the app an
 ## Verification level
 
 - AP mode support and interface names (`wlP1p1s0`, `enP8p1s0`): checked on this Jetson (2026-11-14, JetPack R39.2.1).
-- Whether the 5 GHz hotspot actually comes up, and whether the Quest browser allows `wss` after the self-signed certificate warning: **needs checking on the device.**
+- The hotspot comes up on 5 GHz (channel 40, seen with `iw dev` on 2026-11-15). The Quest browser allows `wss` after the self-signed certificate warning: the headset ran AR sessions over the hotspot during the hackathon, and its events reached `logs/headset.log` through the hub ([README, Verification level](../README.md#verification-level)). The six checks of section 4 were not written down one by one.
 - `localhost` being a secure context: [MDN Secure contexts](https://developer.mozilla.org/docs/Web/Security/Secure_Contexts).
