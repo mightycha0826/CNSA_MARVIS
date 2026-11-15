@@ -45,6 +45,7 @@ export function createMarks({ ctx, state, showToast, changed }) {
   // `shelved`, unseen. `runs`: the scan runs whose coordinates it is known to fit.
   const waypoints = new Map();
   let shelved = []; // field waypoints that are not shown: [{ id, label, room, runs }]
+  let merged = false; // the hub's list has been taken in once in this page
   const scan = { run: null, trusted: false, storedRun: null }; // the scan's run and whether it trusts the stored map (scan/index.js)
   // A waypoint that was just set and may be given a name: { id, until, listening, listenUntil, token }.
   // Its two buttons are on the card over the map and, since "Mark waypoint" is pressed on the
@@ -69,6 +70,8 @@ export function createMarks({ ctx, state, showToast, changed }) {
   };
 
   // ---- the stored list ----
+  /** A waypoint put aside can come back while it fits this run, or the run of the stored map this session may yet line up with. */
+  const canReturn = (d) => !!d.runs && ((scan.run != null && d.runs.includes(scan.run)) || (scan.storedRun != null && d.runs.includes(scan.storedRun)));
   /** The runs a field waypoint fits: those it had, and the one it is shown in now. */
   const runsOf = (w) => [...new Set([...(w.runs ?? []), scan.run].filter(Boolean))].slice(-8);
 
@@ -118,11 +121,15 @@ export function createMarks({ ctx, state, showToast, changed }) {
     if (scan.trusted) unshelve(scan.storedRun);
   }
 
-  /** The hub's list from earlier sessions. */
+  /**
+   * The hub's list. The first time it arrives in a page it is the list from earlier sessions
+   * and is taken in. After that this page's list is the truth: when the link comes back, a
+   * waypoint that was deleted meanwhile must not return from the hub.
+   */
   function onStoredWaypoints({ items }) {
     if (!Array.isArray(items)) return;
     let added = 0;
-    for (const it of items) {
+    for (const it of merged ? [] : items) {
       if (!it?.id || waypoints.has(it.id)) continue;
       if (Array.isArray(it.cell)) {
         const w = { id: it.id, label: it.label ?? '', cell: it.cell };
@@ -139,8 +146,10 @@ export function createMarks({ ctx, state, showToast, changed }) {
     if (scan.trusted) unshelve(scan.storedRun);
     // What was marked or renamed while the link was down is not on the hub yet: now that its
     // list is merged in, send ours.
+    merged = true;
+    // (Also what the hub still has and this page no longer does: it was deleted while the link was down.)
     const kept = new Map(items.map((it) => [it?.id, it?.label ?? '']));
-    if ([...waypoints.values(), ...shelved].some((w) => kept.get(w.id) !== w.label)) saveWaypoints();
+    if (kept.size !== waypoints.size + shelved.length || [...waypoints.values(), ...shelved].some((w) => kept.get(w.id) !== w.label)) saveWaypoints();
   }
 
   const wpOf = (id) => waypoints.get(id) ?? null;
@@ -276,9 +285,11 @@ export function createMarks({ ctx, state, showToast, changed }) {
   // ---- waypoints ----
   /** Mark a place: { room } on the field map, { cell } on the Mars map. The waypoint then waits for its name. */
   function addWaypoint(place) {
-    // Its number: the lowest one free among all the waypoints there are, those put aside too
-    // (they come back with their names), so the number of a deleted waypoint is used again.
-    const n = nextWaypointNumber([...waypoints.keys(), ...shelved.map((d) => d.id)]);
+    // Its number: the lowest one free among the waypoints that are shown and those put aside
+    // that can still come back in this session (they come back with their names), so the
+    // number of a deleted waypoint is used again. One put aside with a run whose map the hub
+    // no longer hands out never comes back: it holds no number.
+    const n = nextWaypointNumber([...waypoints.keys(), ...shelved.filter(canReturn).map((d) => d.id)]);
     // The id must not meet one from an earlier session (the stored list may arrive later).
     const w = { id: `wp-${Date.now().toString(36)}-${n}`, label: `Waypoint ${n}`, ...(place.room ? { room: [place.room[0], place.room[1]] } : { cell: [place.cell[0], place.cell[1]] }) };
     waypoints.set(w.id, w);
