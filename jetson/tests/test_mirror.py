@@ -96,8 +96,26 @@ class SendBufferTest(unittest.TestCase):
 
 
 class FakeRecorder:
+    """What the mirror asks of the hub's recorder (record.py), and what it was given."""
     def __init__(self, on):
         self.on = on
+        self.frames = []
+        self.folder = None
+
+    def start(self):
+        self.on = True
+
+    def stop(self):
+        self.on = False
+
+    def frame(self, jpeg, at=None):
+        self.frames.append(jpeg)
+
+    def state(self):
+        return {"on": self.on, "name": "marswalk-20261115-220001", "frames": len(self.frames)}
+
+    def recordings(self):
+        return []
 
 
 class MirrorCase(AioHTTPTestCase):
@@ -382,11 +400,50 @@ class MonitorTest(MirrorCase):
         resp.close()
         self.assertEqual(await self.told(ws), {"viewers": 0, "acks": True})
 
+    async def test_the_record_button_starts_and_stops_and_pictures_reach_the_recorder(self):
+        self.mirror.recorder = rec = FakeRecorder(on=False)
+        ws, hello = await self.source()
+        self.assertEqual(hello["viewers"], 0)
+        resp = await self.client.post("/monitor/record", json={"on": True})
+        self.assertEqual(resp.status, 200)
+        self.assertTrue((await resp.json())["recording"]["on"])
+        self.assertEqual(await self.told(ws), {"viewers": 1, "acks": True})   # pictures are wanted now
+        await ws.send_bytes(JPEG)
+        await self.told(ws)   # the ack
+        self.assertEqual(rec.frames, [JPEG])
+        self.assertTrue((await self.state())["recording"]["on"])
+        resp = await self.client.post("/monitor/record", json={"on": False})
+        self.assertFalse((await resp.json())["recording"]["on"])
+        self.assertEqual(await self.told(ws), {"viewers": 0, "acks": True})
+        await ws.send_bytes(JPEG)
+        await self.told(ws)
+        self.assertEqual(len(rec.frames), 1)   # not recorded once it is off
+
+    async def test_record_requests_that_make_no_sense_are_refused(self):
+        for body in ({}, {"on": "yes"}, [1]):
+            self.assertEqual((await self.client.post("/monitor/record", json=body)).status, 400)
+        self.assertEqual((await self.client.post("/monitor/record", json={"on": True})).status, 409)   # no recorder
+
+    async def test_only_our_own_recordings_can_be_fetched(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as folder:
+            self.mirror.recorder = rec = FakeRecorder(on=False)
+            rec.folder = Path(folder)
+            (rec.folder / "marswalk-20261115-220001.mp4").write_bytes(b"video")
+            (rec.folder / "secret.txt").write_bytes(b"no")
+            ok = await self.client.get("/recordings/marswalk-20261115-220001.mp4")
+            self.assertEqual(ok.status, 200)
+            self.assertEqual(await ok.read(), b"video")
+            self.assertIn("attachment", ok.headers["Content-Disposition"])
+            for name in ("secret.txt", "marswalk-20261115-220002.mp4", "..%2Fsecret.txt", "marswalk-20261115-220001.mp4.part"):
+                self.assertEqual((await self.client.get(f"/recordings/{name}")).status, 404, name)
+
     async def test_the_state_keeps_its_fields(self):
         self.mirror.extra = lambda: {"rescue": None}   # as the hub adds it
         state = await self.state()
         self.assertEqual(state, {"sources": 0, "viewers": 0, "frames": 0, "ageS": None, "bytes": 0, "info": {},
-                                 "from": None, "tune": None, "stats": None, "rescue": None})
+                                 "from": None, "tune": None, "stats": None, "recording": None, "recordings": [], "rescue": None})
         ws, _hello = await self.source()
         await ws.send_json({"info": {"width": 640, "height": 480, "ar": True}})
         await ws.send_bytes(JPEG)
@@ -396,7 +453,7 @@ class MonitorTest(MirrorCase):
         self.assertEqual(state.pop("from"), "127.0.0.1")
         self.assertEqual(state, {"sources": 1, "viewers": 0, "frames": 1, "ageS": 1.5, "bytes": len(JPEG),
                                  "info": {"width": 640, "height": 480, "ar": True}, "tune": None, "stats": None,
-                                 "rescue": None})
+                                 "recording": None, "recordings": [], "rescue": None})
 
     async def test_the_page_is_served(self):
         resp = await self.client.get("/monitor")

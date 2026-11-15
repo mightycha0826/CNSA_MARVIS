@@ -50,6 +50,8 @@
       tilt
       <button data-k="tiltDeg" data-d="-1" aria-label="Tilt up">−</button><b id="tilt"></b><button data-k="tiltDeg" data-d="1" aria-label="Tilt down">+</button>
     </span>
+    <button id="rec" title="Record the pictures with the wearer's voice and the hub's, for the demo video. Kept on the Jetson in jetson/recordings/">● Record</button>
+    <span id="recinfo"></span>
     <button id="full" title="The picture alone. F does the same; F or Esc comes back">Fullscreen</button>
   </span>
   <div id="stats" hidden></div>
@@ -141,9 +143,44 @@
   document.addEventListener('fullscreenchange', () => {
     if (!document.fullscreenElement) setFull(false);
   });
+  // Recording: the hub writes the pictures and the voices to a file; an MP4 is made after the stop.
+  const rec = document.getElementById('rec');
+  const recinfo = document.getElementById('recinfo');
+  let recording = false;
+  rec.addEventListener('click', async () => {
+    rec.disabled = true;
+    try {
+      const r = await (await fetch('/monitor/record', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ on: !recording }) })).json();
+      if (r.error) recinfo.textContent = 'Recording: ' + r.error;
+    } catch { recinfo.textContent = 'Recording: the hub does not answer'; }
+    rec.disabled = false;
+    poll();
+  });
+  function showRecording(s) {
+    const r = s.recording;
+    recording = !!(r && r.on);
+    rec.textContent = recording ? '■ Stop' : '● Record';
+    rec.style.color = recording ? '#fff' : '#f87171';
+    rec.style.background = recording ? '#b91c1c' : '';
+    const mmss = (sec) => `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(Math.floor(sec % 60)).padStart(2, '0')}`;
+    if (recording) {
+      recinfo.textContent = `REC ${mmss(r.seconds || 0)} · ${((r.bytes || 0) / 1e6).toFixed(0)} MB${r.audio ? '' : ' · no sound'}${r.dropped ? ` · ${r.dropped} pictures dropped` : ''}`;
+      return;
+    }
+    const last = (s.recordings || [])[0];
+    recinfo.textContent = '';
+    if (!last) return;
+    const link = (ext, label) => { const a = document.createElement('a'); a.href = `/recordings/${last.name}.${ext}`; a.textContent = label; a.style.color = '#93c5fd'; a.style.marginLeft = '6px'; return a; };
+    recinfo.append(`${last.name}${last.seconds ? ' (' + mmss(last.seconds) + ')' : ''}: `);
+    if (last.state === 'converting') recinfo.append('making the MP4 …');
+    else if (last.state === 'failed') recinfo.append('the MP4 could not be made;');
+    if (last.mp4) recinfo.append(link('mp4', 'MP4'));
+    if (last.mkv) recinfo.append(link('mkv', last.mp4 ? 'master (MKV)' : 'MKV'));
+  }
   async function poll() {
     try {
       const s = await (await fetch('/monitor.json', { cache: 'no-store' })).json();
+      showRecording(s);
       const fps = before ? Math.max(0, s.frames - before.frames) / ((Date.now() - before.at) / 1000) : 0;
       before = { frames: s.frames, at: Date.now() };
       const rescue = document.getElementById('rescue');
