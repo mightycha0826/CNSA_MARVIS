@@ -362,6 +362,31 @@ test('a floor point lifted by depth error is not a thing: only points above thin
   assert.equal(cell(), OBSTACLE);
 });
 
+test('level ground a step above or below the floor is ground, not a thing and not a drop', () => {
+  // A platform, the next room a step lower, a floor the headset places 20 cm off: read with the
+  // 7 cm a depth point can be out, in either direction.
+  const many = SCAN.minPoints * 3;
+  for (const level of [0.2, -0.2]) {
+    for (const off of [-0.07, 0, 0.07]) {
+      const grid = newGrid();
+      for (let i = 0; i < SCAN.setScans + 2; i++) {
+        for (let k = 0; k < many; k++) grid.add(0.05, level + off, 0.05);
+        grid.commit();
+      }
+      assert.equal(grid.cells[cellOf(0.05, 0.05)], PASSABLE, `ground at ${level} m read as ${(level + off).toFixed(2)} m`);
+    }
+  }
+  // What stands on such ground is still in the way: a seat 0.45 m above the floor, a pit 0.6 m deep.
+  for (const y of [0.45, -0.6]) {
+    const grid = newGrid();
+    for (let i = 0; i < SCAN.setScans + 2; i++) {
+      for (let k = 0; k < many; k++) grid.add(0.05, y, 0.05);
+      grid.commit();
+    }
+    assert.equal(grid.cells[cellOf(0.05, 0.05)], OBSTACLE, `${y} m`);
+  }
+});
+
 test('an unclear read changes nothing: too few points, or floor with a little of something else', () => {
   const grid = newGrid();
   const many = SCAN.minPoints * 3;

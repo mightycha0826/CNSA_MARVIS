@@ -70,11 +70,18 @@ const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
 // How far live depth looks, along the floor (SCAN.depthRangeM; leaveM and glowFullM follow it).
 const depthRangeM = clamp(numberOr('depthRange', 5), 1.5, 8);
+// Ground is not one flat plane: a room's floor sits a little off where the headset puts it,
+// a platform or a ramp lifts it, the next room lies a step lower. Ground that differs from the
+// floor by up to this much is still ground to walk on, not a thing in the way and not a drop
+// (0.2 m: a kerb, a stair's riser). The three heights below are this plus what depth error
+// adds (a floor point 5 m away reads up to 7 cm off, and the floor itself a few cm).
+// ?step=0.05 gives the stricter heights of before (things from 0.25 m, drops from 0.3 m).
+const stepM = clamp(numberOr('step', 0.2), 0, 0.5);
 
 export const SCAN = {
   cellM: 0.1, // the window is TILES.window x TILES.cells of these per side (tiles.js): 25.6 m
   followMs: 250, // how often the window is checked against where the wearer stands
-  floorBandM: 0.15, // surfaces below this height are floor
+  floorBandM: 0.1 + stepM, // room model: surfaces below this height are floor (0.3 m)
   headM: 1.9, // surfaces above this height do not block walking
   sampleM: 0.07, // spacing of the points sampled on each triangle
   trianglesPerFrame: 1500, // budget, so a large room mesh does not stall a frame
@@ -116,12 +123,12 @@ export const SCAN = {
   // 2.5): things are marked, and cleared again by the floor under them, out to 3.8 m.
   depthRangeM,
   bodyM: 0.8, // cells this close to the headset, along the floor, are the wearer's own hands and body
-  floorNoiseM: 0.15, // a depth point within this height of y = 0 counts as floor (the real floor can sit a few cm off)
-  thingMinM: 0.25, // a depth point counts as a thing from this height: a 4 % depth error lifts a floor point 7 cm
-  // Ground this far below the floor is a drop, and is marked like an obstacle: a stair going down, a kerb, a pit.
-  // 0.3 m: a single low step (under 0.3 m) can be walked down; depth error puts a floor point 7 cm low at most.
+  floorNoiseM: 0.1 + stepM, // a depth point within this height of y = 0 counts as ground (0.3 m: level ground a step up or down, and the floor a few cm off)
+  thingMinM: 0.2 + stepM, // a depth point counts as a thing from this height (0.4 m): above what a step up plus depth error can reach
+  // Ground this far below the floor is a drop, and is marked like an obstacle: a stair going down, a pit.
+  // 0.45 m: ground a step lower (0.2 m) is walked down, and depth error puts a point 7 cm low at most.
   // ?drops=0 turns it off (a mirror-like floor may read as deeper than it is).
-  dropMinM: isOff('drops') ? 0 : 0.3,
+  dropMinM: isOff('drops') ? 0 : 0.25 + stepM,
   minPoints: 3, // samples needed in a cell before a read says anything about it
   // Far away the image lies thin on the floor: where a floor cell would get fewer than twice
   // this many samples, this many say "floor", and where it would not even get this many the
