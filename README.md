@@ -11,7 +11,7 @@ Project Marvis is a helmet heads-up display for an astronaut walking on Mars. It
 
 *The four map layers over the same 2 km × 2 km of Gediz Vallis channel, with the path Curiosity drove. A plot of NASA data drawn by our script.*
 
-The project was called Marswalk Visor, then MARVIS. Names in the code keep the older names: the Python package `marswalk`, the `MARSWALK` hotspot, the "Start MARVIS" launcher, file names such as `marswalk-visor-demo.mp4`, and the line under the two figures.
+The project was called Marswalk Visor at first. Names in the code keep that name: the Python package `marswalk`, the `MARSWALK` hotspot, and file names such as `marswalk-visor-demo.mp4`.
 
 ## Mission scenario
 
@@ -118,7 +118,7 @@ npm run dev        # https://localhost:5173/ (self-signed certificate)
 
 Open `https://localhost:5173/?mock=1` and get past the certificate warning. Everything is fake in this mode: terrain, hub and obstacle. Keys: `N` navigate, `H` base, `S` stop, `L` thermal / optical map, `T` temperature spike. `?mock=link,hazard` loads the real NASA layer files with a fake hub and a fake obstacle; `&mode=field` opens the field map.
 
-**On the Jetson, with the headset.** After the one-time setup in [jetson/README.md](jetson/README.md), double-click **Start MARVIS** on the Jetson's desktop. It brings up the `MARSWALK` hotspot, starts the hub, opens the monitor page, and opens the app in the headset's browser when the headset is reachable over adb. Otherwise join the hotspot on the headset, open `https://10.42.0.1:8443/` and accept the certificate warning once. Then press **Mars map** or **Field map**. The connection step by step is in [jetson/QUEST_CONNECT.md](jetson/QUEST_CONNECT.md).
+**On the Jetson, with the headset.** After the one-time setup in [jetson/README.md](jetson/README.md), double-click **Start Project Marvis** on the Jetson's desktop. It brings up the `MARSWALK` hotspot, starts the hub, opens the monitor page, and opens the app in the headset's browser when the headset is reachable over adb. Otherwise join the hotspot on the headset, open `https://10.42.0.1:8443/` and accept the certificate warning once. Then press **Mars map** or **Field map**. The connection step by step is in [jetson/QUEST_CONNECT.md](jetson/QUEST_CONNECT.md).
 
 Tests, lint and the build are in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
@@ -136,12 +136,12 @@ Six people, one part each. The letters are used in the documents and in branch n
 
 | Slot | Owner | Role | One-line description |
 |---|---|---|---|
-| A | 이효제 | Real-time environment analysis | The map of nearby obstacles from the headset depth sensor |
-| B | 차유근 | XR core · integration lead | The skeleton; merged everyone's code into one |
-| C | 김건민 | NASA data layers · mission scenario | NASA data, processed into map layers |
-| D | 안현상 | Map · route guidance | The palm map, the route and the arrows |
-| E | 김도훈 | Jetson hub · voice · sensor | The voice assistant and the temperature sensor on the Jetson |
-| F | 길윤석 | HUD UI · demo | The status readings, the emergency screen, the demo video |
+| A | Hyoje Lee | Real-time environment analysis | The map of nearby obstacles from the headset depth sensor |
+| B | Yukeun Cha | XR core · integration lead | The skeleton; merged everyone's code into one |
+| C | Geonmin Kim | NASA data layers · mission scenario | NASA data, processed into map layers |
+| D | Hyeonsang Ahn | Map · route guidance | The palm map, the route and the arrows |
+| E | Dohun Kim | Jetson hub · voice · sensor | The voice assistant and the temperature sensor on the Jetson |
+| F | Yunseok Gil | HUD UI · demo | The status readings, the emergency screen, the demo video |
 
 ## Use of AI
 

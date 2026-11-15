@@ -571,6 +571,7 @@ class RecordingTest(MirrorCase):
         resp = await self.client.get(f"/recordings/{name}")
         self.assertEqual(resp.status, 200)
         self.assertEqual(resp.headers["Content-Disposition"], f'attachment; filename="{name}"')
+        self.assertEqual(resp.headers["Content-Type"], "video/x-matroska")
         data = await resp.read()
         self.assertEqual(data, (rec.folder / name).read_bytes())
         self.assertEqual(data[:4], bytes.fromhex("1A45DFA3"))   # a Matroska file
@@ -587,7 +588,8 @@ class RecordingTest(MirrorCase):
         (rec.folder / "marswalk-20261115-220003.mkv").mkdir()                    # a folder with a file's name
         (rec.folder.parent / "marswalk-20261115-220002.mp4").write_bytes(b"no")  # a good name, outside the folder
         (rec.folder.parent / "secret.txt").write_bytes(b"no")
-        self.assertEqual(await (await self.client.get(f"/recordings/{ours}")).read(), b"video")
+        resp = await self.client.get(f"/recordings/{ours}")
+        self.assertEqual((resp.headers["Content-Type"], await resp.read()), ("video/mp4", b"video"))
         for name in ("notes.txt", "marswalk-20261115-220001.mp4.part", "marswalk-20261115-220001.mkv%0A",
                      "marswalk-20261115-220003.mkv", "marswalk-20261115-220009.mp4",          # not there
                      "..%2Fmarswalk-20261115-220002.mp4", "%2e%2e%2fmarswalk-20261115-220002.mp4",
@@ -635,6 +637,31 @@ class RecordingTest(MirrorCase):
         _status, body = await self.record(False)
         self.assertEqual((body["recording"]["frames"], body["recording"]["seconds"]), (2, 3.0))
         self.assertEqual(mkv_seconds(rec.folder / (body["recording"]["name"] + ".mkv")), 3.0)
+
+
+class EndTest(MirrorCase):
+    async def test_when_the_hub_ends_the_app_is_closed_and_the_streams_end(self):
+        ws, _hello = await self.source()
+        resp = await self.client.get("/monitor.mjpg")
+        self.assertEqual(await self.told(ws), {"viewers": 1, "acks": True})
+        ending = asyncio.create_task(self.mirror.close())
+        msg = await asyncio.wait_for(ws.receive(), 2.0)
+        self.assertEqual((msg.type, msg.data), (WSMsgType.CLOSE, 1001))        # "going away"
+        self.assertEqual(await asyncio.wait_for(resp.content.read(), 2.0), b"")   # the stream is over, not cut
+        await asyncio.wait_for(ending, 2.0)
+        for _ in range(100):         # both handlers have returned: the hub has nothing to wait for
+            if not self.mirror.sources and self.mirror.viewers == 0:
+                break
+            await asyncio.sleep(0.01)
+        self.assertEqual((len(self.mirror.sources), self.mirror.viewers), (0, 0))
+
+    async def test_an_app_that_does_not_answer_holds_the_end_up_for_a_second_only(self):
+        class Deaf:
+            async def close(self, code=None):
+                await asyncio.sleep(60)
+        began = asyncio.get_running_loop().time()
+        await mirror_module.close_sockets([Deaf(), Deaf()])
+        self.assertLess(asyncio.get_running_loop().time() - began, 1.5)
 
 
 class OversizeTest(MirrorCase):

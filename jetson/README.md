@@ -32,6 +32,9 @@ Without `uv`: `python3 -m venv .venv && .venv/bin/pip install -r requirements.tx
 | `--warn-c 30 --critical-c 35 --margin-c 1` | Temperature alert thresholds (tune with the real sensor). An alert steps down once the temperature is `margin` under its threshold |
 | `--wake-word helmet` | Only obey speech that contains the word ("Helmet, status report"). For rooms where other people talk; off by default |
 | `--stt auto --tts auto` | Speech backends. `auto` uses the models if present, otherwise `null` / `tone` |
+| `--recordings-dir recordings` | Where the monitor page's recordings go (default `jetson/recordings/`, not in git) |
+| `--record-max-min 30` | A recording ends by itself after this many minutes |
+| `--no-convert` | Keep the recordings as `.mkv` only; make no `.mp4` after the stop |
 
 The same command runs on a PC without a Jetson (no Arduino → `source: mock`; no models → no STT, beep TTS).
 
@@ -103,7 +106,7 @@ Received TTS is saved as `tts_out_<n>.wav`. Use `--url wss://10.42.0.1:8443/ws` 
 
 ## One click start
 
-After the Jetson was switched on, double-click **Start MARVIS** on the desktop (or pick it in the app list). It brings up the hotspot if it is down, starts the hub (stopping one that runs), opens the monitor page, opens the app in the headset's browser when the headset is reachable over adb, and says in its window when the headset connects and when it is in AR. Run again at any time: it restarts the hub and leaves the rest alone.
+After the Jetson was switched on, double-click **Start Project Marvis** on the desktop (or pick it in the app list). It brings up the hotspot if it is down, starts the hub (stopping one that runs), opens the monitor page, opens the app in the headset's browser when the headset is reachable over adb, and says in its window when the headset connects and when it is in AR. Run again at any time: it restarts the hub and leaves the rest alone.
 
 ```bash
 tools/start_all.sh                     # the same from a terminal
@@ -112,7 +115,7 @@ tools/start_all.sh --stop              # stop the hub
 tools/start_all.sh --install-shortcut  # put the icon on the desktop and in the app list (once per machine)
 ```
 
-The launcher also lies in the project folder (`Start MARVIS.desktop`). GNOME Files opens such a file as text instead of running it, which is why the icon on the desktop exists. Nothing in it uses sudo. On the headset one press is still needed: **Field map** or **Mars map** (a browser may only start AR from the wearer's own press).
+The launcher also lies in the project folder (`Start Project Marvis.desktop`). GNOME Files opens such a file as text instead of running it, which is why the icon on the desktop exists. Nothing in it uses sudo. On the headset one press is still needed: **Field map** or **Mars map** (a browser may only start AR from the wearer's own press).
 
 The hub started this way runs detached from the window and without `--dev` (`tools/start_all.sh --dev` adds it); its output is added to `logs/hub.log` and its pid is in `logs/hub.pid`. If the systemd service below is active, the hub is left to it. A missing `web/dist` or certificate is made, one that is there is never rebuilt. Whether the app is in AR is only known while a monitor page is open, because only then does the app send pictures. `tools/start_all.sh --help` lists the other options (`--no-browser`, `--no-wait`) and the environment variables for other ports, more hub options and another log folder.
 
@@ -128,10 +131,27 @@ journalctl -u marswalk-hub -f
 
 - **Monitor.** `http://localhost:8080/monitor` (or `https://<jetson>:8443/monitor`) shows what the headset app is drawing, live. The app sends JPEG pictures over `/mirror` only while the page is open. No Meta account or developer mode is involved.
 - **Whole view or camera.** The picture shows the wearer's whole view (both eyes, about 118 x 101 degrees) with the camera picture in the middle at its true size; "Camera" on the page gives the old view, the room filling the picture and the edge of the wearer's view cut off. The line under the title shows what the stream is doing: JPEG quality, size of a picture, megabits, delay. The app raises the quality while the hotspot has room and lowers it when it has not; no more than two pictures are ever on their way, so the picture is never seconds old.
-- **Recording.** "Record" on the monitor page writes the pictures with the wearer's microphone and the hub's speech to `recordings/marswalk-<date>-<time>.mkv` (`--recordings-dir`; not in git), and after "Stop" makes an `.mp4` (H.264 + AAC, 30 frames a second) beside it with GStreamer; both can be downloaded from the page. A recording ends by itself after 30 minutes (`--record-max-min`) or when the disk runs short; `--no-convert` keeps the `.mkv` only. While a recording runs, pictures are made even with no monitor page open.
+- **Recording.** "Record" on the monitor page writes the pictures with the wearer's microphone and the hub's speech to `recordings/marswalk-<date>-<time>.mkv` (`--recordings-dir`; not in git), and after "Stop" makes an `.mp4` (H.264 + AAC, 30 frames a second) beside it with GStreamer. A recording ends by itself after 30 minutes (`--record-max-min`) or when the disk has less than 1 GB left, and does not start with less than 2 GB; `--no-convert` keeps the `.mkv` only. While a recording runs, pictures are made even with no monitor page open, and it goes on when the headset drops out for a while. More under [Recording the demo video](#recording-the-demo-video).
+- **Fullscreen.** The Fullscreen button or the F key shows the picture alone; F or Esc brings the page back. A rescue banner stays visible.
 - **Field maps.** The headset sends the tiles of its obstacle map that changed (a tile is 6.4 m square); the hub keeps them in `maps/` (`--maps-dir`), one JSON file per run holding every tile of that run, the newest 200 runs. After a restart the newest run is still handed back to a headset that asks, and a run that carries on is merged into its own file. Files from before the tiles (one grid per file) are skipped.
 - **Utterances.** The last 100 pieces of speech the hub cut out of the microphone stream are kept as WAV in `logs/utterances/`, named by time and by what the recogniser made of them (`--keep-audio 0` keeps none). This is audio of whoever spoke near the headset; it stays on the Jetson and `logs/` is not in git.
 - **Rescue signal.** The headset's emergency button (the red bar on its command card, or "SOS" / "Rescue" / "Help" then "Confirm" by voice) arrives as `rescue.signal`. The hub logs it, raises the alert `crew-rescue` on every other headset, shows a banner on the monitor page, speaks, and after 5 s acknowledges in the name of a crew that does not exist ("Base crew (simulated)").
+
+### Recording the demo video
+
+1. Open the monitor page, wait for "Live", press **● Record**. Beside the button: the running time and the size of the file. "no pictures are coming" there means the headset is not in AR or not connected; the recording runs on, with the voices only until pictures come.
+2. Press **■ Stop**. The page shows "making the MP4 …" (about half the recording's length on the Jetson, at low priority), then two links: the **MP4** to hand on, and the **master MKV**, the pictures exactly as the headset sent them (Motion JPEG, so it is large: a few hundred MB a minute at full size) with 48 kHz sound. VLC and mpv play the MKV.
+3. "Last recordings" under the title lists the newest five with their links. The files stay in `recordings/` until deleted by hand.
+
+What is in the file: every picture at the moment it arrived, the wearer's microphone (all of it, also what the hub does not listen to), and what the hub said, placed where the headset played it. While the hub speaks the microphone is turned down, because it hears the headset's own speaker.
+
+If the hub is stopped while a recording runs (Ctrl-C, `kill`, the one click start starting it again), the file is finished first and stays as an MKV; no MP4 is made of it. A hub killed outright (`kill -9`, power loss) leaves an MKV without its length written, which still plays. Without GStreamer (`gst-launch-1.0`, `x264enc`, `voaacenc`) there is the MKV only, and without numpy the recording has no sound.
+
+```bash
+curl -X POST -d '{"on": true}' http://localhost:8080/monitor/record    # the same as the button; {"on": false} stops
+curl -s http://localhost:8080/monitor.json                             # "recording": the one that runs or ran last, "recordings": the files
+curl -O http://localhost:8080/recordings/marswalk-20261115-213045.mp4
+```
 
 ## Layout
 
@@ -165,4 +185,5 @@ The web app's voice link is `web/src/core/voice.js`: it streams the microphone c
 
 - **Real voices and a real microphone.** Accuracy was measured only with synthetic speech (18 of 18 test sentences through the streaming path, before the command list was shortened; not measured again since). After a session with the headset, read `logs/heard.log` and add what was misheard to `commands.json`.
 - **Real sensor.** A sensor is wired and read by the hub (2026-11-14: warming it by hand raised the alerts). Alert thresholds are still the starting values.
+- **Recordings in other players.** The MKV and the MP4 were read with GStreamer only (`gst-discoverer-1.0`, a seek, the conversion itself). VLC, mpv and ffmpeg are not installed on the Jetson and were not tried. The record controls of the monitor page were checked by running its script against a stand-in page, not in a browser, and never with the real headset.
 - `dev.*` messages are development-only and not in INTERFACES.md. The browser never sends them; the hub accepts them only with `--dev`.

@@ -421,7 +421,7 @@ if "--figure" in sys.argv:
         d.text(xy, text, font=f, fill=fill)
 
     CYAN, YELLOW, GREEN, RED = (0, 229, 255), (255, 214, 0), (60, 255, 90), (255, 70, 70)
-    NOTE = "MARVIS - built from NASA data by the team's pipeline (code written with AI assistance)"
+    NOTE = "Project Marvis - built from NASA data by the team's pipeline (code written with AI assistance)"
 
     # 1) The four layers in one image
     P = 720

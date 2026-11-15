@@ -33,13 +33,15 @@
   #controls button:disabled { opacity: 0.5; cursor: default; }
   #controls #rec { color: #f87171; }
   #controls #rec.on { background: #b91c1c; border-color: #ef4444; color: #fff; }
+  #controls > #recinfo { display: block; }
+  #controls > #recinfo:empty { display: none; }
   #recinfo.old { opacity: 0.5; }
   #recinfo .warn { color: #fbbf24; }
   #recinfo a, #recs a { color: #93c5fd; }
   #stats, #recs { flex-basis: 100%; color: #7c8798; font-size: 12px; font-variant-numeric: tabular-nums; }
   #stats[hidden], #recs[hidden] { display: none; }
   #recs summary { cursor: pointer; width: fit-content; }
-  #recs div { padding: 2px 0 0 14px; }
+  #reclist div { padding: 2px 0 0 14px; }
   body.full header, body.full footer { display: none; }
   footer { padding: 8px 16px; color: #7c8798; border-top: 1px solid #1c212b; font-size: 12px; }
 </style>
@@ -58,8 +60,8 @@
       tilt
       <button data-k="tiltDeg" data-d="-1" aria-label="Tilt up">−</button><b id="tilt"></b><button data-k="tiltDeg" data-d="1" aria-label="Tilt down">+</button>
     </span>
-    <button id="rec" title="Record the pictures with the wearer's voice and the hub's, for the demo video. Kept on the Jetson in jetson/recordings/; an MP4 is made after the stop">● Record</button>
     <span id="recinfo"></span>
+    <button id="rec" aria-pressed="false" title="Record the pictures with the wearer's voice and the hub's, for the demo video. Kept on the Jetson in jetson/recordings/; an MP4 is made after the stop">● Record</button>
     <button id="full" title="The picture alone. F does the same; F or Esc comes back">Fullscreen</button>
   </span>
   <div id="stats" hidden></div>
@@ -78,7 +80,8 @@
   const wait = document.getElementById('wait');
   view.src = '/monitor.mjpg';
   view.onerror = () => setTimeout(() => { view.src = '/monitor.mjpg?' + Date.now(); }, 2000); // the hub restarted
-  let before = null;
+  let before = null; // the pictures the hub had counted at an earlier poll, and when that was
+  let fps = 0;
   // The camera lens: shown while the app draws over a camera picture; the buttons change it by a degree.
   const tune = document.getElementById('tune');
   let lens = null;
@@ -174,7 +177,7 @@
     } catch { error = 'the hub does not answer'; }
     recError = error ? { text: `${on ? 'Not recording' : 'Not stopped'}: ${error}`, until: Date.now() + 8000 } : null;
     recBusy = false;
-    poll();
+    await poll();
   });
   // Lines are made of words and links with dots between them. A line is written anew only when
   // what it says changed: a link that is replaced under the mouse does not take the click.
@@ -183,7 +186,10 @@
     if (written.get(el) === key) return;
     written.set(el, key);
     el.replaceChildren();
-    parts.forEach((part, i) => el.append(i ? ' · ' : '', part));
+    parts.forEach((part, i) => {
+      if (i) el.append(' · ');
+      el.append(part);
+    });
   }
   const warn = (words) => { const el = document.createElement('span'); el.className = 'warn'; el.textContent = words; return el; };
   const file = (x, ext, label) => { const a = document.createElement('a'); a.href = `/recordings/${x.name}.${ext}`; a.textContent = `${label} ${megabytes(x[ext])}`; return a; };
@@ -204,11 +210,12 @@
     rec.disabled = recBusy;
     rec.textContent = recording ? '■ Stop' : '● Record';
     rec.classList.toggle('on', recording);
+    rec.setAttribute('aria-pressed', String(recording));
     recinfo.classList.remove('old');
     if (recError && Date.now() > recError.until) recError = null;
     // Beside the button: the recording that runs, or how the last one of this hub ended.
     const parts = recError ? [warn(recError.text)] : [];
-    let key = [recError?.text];
+    const key = [recError?.text];
     if (recording) {
       parts.push(`REC ${mmss(r.seconds || 0)}`, megabytes(r.bytes || 0));
       if (!r.audio) parts.push('pictures only, no sound');
@@ -240,8 +247,11 @@
   async function poll() {
     try {
       const s = await (await fetch('/monitor.json', { cache: 'no-store' })).json();
-      const fps = before ? Math.max(0, s.frames - before.frames) / ((Date.now() - before.at) / 1000) : 0;
-      before = { frames: s.frames, at: Date.now() };
+      const since = before ? (Date.now() - before.at) / 1000 : 0;
+      if (!before || since >= 0.5) { // a poll right behind another one (after a press) has nothing to measure
+        if (before) fps = Math.max(0, s.frames - before.frames) / since;
+        before = { frames: s.frames, at: Date.now() };
+      }
       const rescue = document.getElementById('rescue');
       rescue.hidden = !s.rescue;
       if (s.rescue) {

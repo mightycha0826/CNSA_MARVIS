@@ -4,7 +4,7 @@
 #   tools/start_all.sh --dev               # the hub also takes dev.* messages (tools/fake_quest.py)
 #   tools/start_all.sh --status            # say what is running; changes nothing
 #   tools/start_all.sh --stop              # stop the hub this script starts; nothing else
-#   tools/start_all.sh --install-shortcut  # the "Start MARVIS" icon: on the desktop and in the app list
+#   tools/start_all.sh --install-shortcut  # the "Start Project Marvis" icon: on the desktop and in the app list
 # More options: --no-browser (do not open the monitor page), --no-wait (do not wait for the headset),
 #   --pause (keep the window open until Enter; the icon passes it), --help.
 # Safe to run again at any time: the hub is stopped and started again, the rest is left as it is.
@@ -29,7 +29,7 @@ START_WAIT_S=${MARSWALK_START_WAIT_S:-90}      # the speech models take a while 
 WATCH_S=${MARSWALK_WATCH_S:-600}               # how long to wait for the headset
 HEADSET_URL=https://10.42.0.1:$PORT/           # the hotspot address, as in the certificate
 MONITOR_URL=http://localhost:$HTTP_PORT/monitor
-LAUNCHER="Start MARVIS.desktop"
+LAUNCHER="Start Project Marvis.desktop"
 read -r -a HUB_ARGS <<< "${MARSWALK_HUB_ARGS:-}"
 
 PYBIN=$JETSON/.venv/bin/python
@@ -200,7 +200,7 @@ headset_words() {
 notify() {
   [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] || return 0
   command -v notify-send > /dev/null || return 0
-  timeout 3 notify-send -a MARVIS -i applications-science "MARVIS" "$1" > /dev/null 2>&1
+  timeout 3 notify-send -a "Project Marvis" -i applications-science "Project Marvis" "$1" > /dev/null 2>&1
   return 0
 }
 
@@ -459,7 +459,7 @@ speed_hint() {
 
 summary() {
   echo
-  echo "MARVIS is running."
+  echo "Project Marvis is running."
   row Hotspot "$S_HOTSPOT"
   if [ "$HUB_BY_UNIT" = 1 ]; then
     row Hub "systemd service $UNIT; log: journalctl -u $UNIT -f"
@@ -602,7 +602,7 @@ do_install() {
 
   f=$apps/marswalk-start.desktop
   if mkdir -p "$apps" && write_launcher "$f"; then
-    line Shortcut OK "$f: \"Start MARVIS\" in the app list"
+    line Shortcut OK "$f: \"Start Project Marvis\" in the app list"
   else
     line Shortcut FAIL "cannot write $f"
     rc=1
@@ -649,7 +649,7 @@ main() {
     install) do_install; exit $? ;;
   esac
 
-  echo "Starting MARVIS (hub on ports $PORT and $HTTP_PORT)."
+  echo "Starting Project Marvis (hub on ports $PORT and $HTTP_PORT)."
   step_hotspot
   step_web
   step_cert
