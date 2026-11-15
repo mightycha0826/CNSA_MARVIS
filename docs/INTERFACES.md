@@ -1,10 +1,10 @@
 # Interface contract
 
-The formats of the data modules exchange. **This document comes before the code.** To change a format, tell B, edit this document, then edit the code.
+The formats of the data the modules of Project Marvis exchange. **This document comes before the code.** To change a format, tell B, edit this document, then edit the code. The letters A to F are the team's six parts ([README, Team](../README.md#team)).
 
 When you give work to an AI, this file and your own folder are enough.
 
-> Every number here (grid size, temperature thresholds and so on) is a starting value. The team fixes them in the first 3 hours of the hackathon.
+> The JSON examples show the shape of a file or a message. Some were written before the data existed and carry placeholders (`null`, `[0, 0]`); the real values are in the files in `web/public/data/` ([DATA.md](DATA.md)). Thresholds marked "starting values" were not tuned further.
 >
 > All text in the project is English: labels, alert messages, voice commands and spoken guidance.
 
@@ -29,7 +29,7 @@ There are two coordinate systems. Mixing them up is what breaks most often at in
 | Room coordinates | WebXR `local-floor` reference space. `[x, y, z]`, y is up | meters | A, D, F |
 
 - **Only D** writes the conversion between the two (`web/src/nav/`). Other modules do not compute it themselves.
-- The conversion is defined by the `demo` entry of `layerset.json`. A region of the map is scaled down to the size of the room floor.
+- The conversion was first defined by the `demo` entry of `layerset.json`: a region of the map scaled down to the size of the room floor. The code no longer uses that entry. D's planner works in map metres (`web/src/nav/README.md`), and `nav:position` carries how many map metres one real metre is (section 3).
 - **Only C** converts Mars longitude/latitude ↔ map grid. The browser only receives grid coordinates. One degree is about 59,274.7 m (radius 3,396,190 m).
 - All times are Unix time in milliseconds (`Date.now()`).
 - Field names end with the unit: Celsius (`C`) for temperature, meters (`M`) for distance. Examples: `suitTempC`, `distanceM`. (`suitTempC` is the **ambient temperature**: the sensor on the suit measures the air around the wearer. The field and the alert id `suit-temp` keep the names they had when it was called the suit temperature; body temperature is simulated in the headset and is not in this field.)
@@ -42,7 +42,7 @@ Location: `web/public/data/`
 
 ### 2.1 `layerset.json` — layer list
 
-The values below come from the analysis in [RESOURCES.md](RESOURCES.md). C fills in each `null` after processing the files.
+The values below come from the analysis in [RESOURCES.md](RESOURCES.md). The example was written before the data was processed: where it has `null`, the real file has a value.
 
 ```json
 {
@@ -114,8 +114,8 @@ The values below come from the analysis in [RESOURCES.md](RESOURCES.md). C fills
 }
 ```
 
-- `grid` divides 2,048 m × 2,048 m into 512×512 cells of 4 m. The source terrain is 1 m resolution, so a finer grid is possible. B, C and D decide after seeing headset performance.
-- The `base` coordinates in `waypoints` and `demo` are placeholders. C and D fix them.
+- `grid` divides 2,048 m × 2,048 m into 512×512 cells of 4 m. The source terrain is 1 m resolution, so a finer grid is possible; the 4 m grid was kept.
+- In the example above the `base` coordinates in `waypoints` and the `demo` region are placeholders. The real file has the real ones ([DATA.md](DATA.md) section 2).
 - In the example above `site1` is the center of the grid, but **in the real file `site1` is `[275, 272]`**, the place where the sulfur was actually found ([DATA.md](DATA.md) section 2). Read `base`, `site1` and `demo` from `layerset.json`; do not hard-code them.
 - In the real file `label` is the short Korean name the HUD's Korean mode (`?lang=ko`) displays, and `labelEn` is the English name shown in the example above. The real file also has a few extra fields (`credit`, `rmc`, `sol`). Code works without reading them.
 
@@ -125,15 +125,15 @@ Fields:
 |---|---|
 | `site.lat`, `site.lon` | Reference point (south latitude is negative, east longitude) |
 | `site.bounds` | Map extent. Every layer is cropped to it |
-| `site.geologicUnit` | Geologic unit of the site. Shown in the status panel and the legend |
+| `site.geologicUnit` | Geologic unit of the site. Kept in the data; the app does not show it |
 | `grid` | The grid all layers share. C resamples every layer to it whatever its source resolution |
 | `layers[].kind` | Data kind from challenge text Q4: `optical`, `thermal`, `spectral`, `topographic`, `geophysical`, `atmospheric`, `radiation`, `chemical`. Computed layers are `derived` |
 | `layers[].format` | `float32` (numeric grid) or `image` |
 | `layers[].min`, `max` | Value range of a numeric grid. Used for coloring and the legend |
 | `layers[].sourceUrl` | Address of the source data. Used as is in the submission text. **Never empty** |
 | `waypoints` | Base and survey site. `cell` is a map grid coordinate. B's loader adds a third, derived one before `layers:ready`: `near`, a cell about 20 m from the base on the bearing to the survey site and not steeper than 20° (`web/src/core/waypoints.js`, `"derived": true`; `?near=<metres>` changes the distance, `?near=0` leaves it out). It is a destination like the others (`nav:request` `{ "targetId": "near" }`) |
-| `demo.regionCells` | Map region mapped onto the room `[col0, row0, col1, row1]` |
-| `demo.roomSizeM` | Room floor size that region is scaled down to `[width, depth]` |
+| `demo.regionCells` | Map region mapped onto the room `[col0, row0, col1, row1]`. Not used by the app (section 1) |
+| `demo.roomSizeM` | Room floor size that region is scaled down to `[width, depth]`. Not used by the app |
 
 ### 2.2 Numeric grid files (`*.bin`)
 
@@ -162,8 +162,8 @@ Values extracted from Curiosity observations. The headset replays them in order 
 }
 ```
 
-- `radiationUGyPerDay` is required. If it cannot be extracted from the RAD files, put in a published value and set `radiationIsFixedValue` to `true`. The status panel then labels it "published value".
-- `pressurePa` and `airTempK` are optional. The atmospheric (REMS) data is unverified, so they may be `null`. The status panel hides `null` items.
+- `radiationUGyPerDay` is required. If it cannot be extracted from the RAD files, put in a published value and set `radiationIsFixedValue` to `true`. The real file holds values extracted from the RAD file, so the flag is `false`.
+- `pressurePa` and `airTempK` are optional and may be `null`; the HUD hides `null` items. The real file has both for every sample.
 
 ### 2.5 `traverse.json` — Curiosity's actual traverse
 
@@ -222,12 +222,12 @@ bus.on('layer:toggle', ({ id, visible }) => { /* ... */ });   // receive
 | `layers:ready` | B (core) | D, F | Once, when `layerset.json` and the files are loaded |
 | `layer:toggle` | F, B (from voice) | D | A layer is turned on or off |
 | `env:update` | B (core) | F | The next `env.json` sample is replayed |
-| `hazard:update` | A | D, F | The field obstacle grid changes (at most four times a second). The grid is a window of 256 × 256 cells that moves with the wearer in steps of a tile (6.4 m): **read `originXZ` from every event**. An obstacle stays in it until clear floor is seen where it stood, or the wearer walks there |
+| `hazard:update` | A | D, F | The field obstacle grid changes (up to ten times a second). The grid is a window of 256 × 256 cells that moves with the wearer in steps of a tile (6.4 m): **read `originXZ` from every event**. An obstacle stays in it until clear floor is seen where it stood; standing on it does not clear it (the wearer gets the alert `hazard-zone` instead) |
 | `nav:request` | F, B (from voice) | D | A route is requested |
 | `nav:route` | D | F | A route was computed |
 | `telemetry:update` | B (from the Jetson) | F | The ambient temperature (the sensor on the suit) arrives (once a second) |
-| `alert:raise` | B (from the Jetson), D | F, D | A hazard appears |
-| `alert:clear` | B (from the Jetson), D | F, D | A hazard is gone |
+| `alert:raise` | B (from the Jetson), D, field | F, D | A hazard appears |
+| `alert:clear` | B (from the Jetson), D, field | F, D | A hazard is gone |
 | `voice:command` | B (from the Jetson) | All modules | A voice command was understood |
 | `voice:say` | All modules | B (to the Jetson) | Something should be said aloud |
 | `mode:change` | F | All modules | The display mode changes |
@@ -284,7 +284,7 @@ bus.on('layer:toggle', ({ id, visible }) => { /* ... */ });   // receive
 
 The real scan (`web/src/scan/`) sends its window, 25.6 m × 25.6 m (256 × 256 cells) around the wearer, built from the room geometry the headset keeps (WebXR `mesh-detection` and `plane-detection`), with two extra fields: `"source": "room-scan"` and `"stats": { "meshes", "planes", "obstacles", "floor", "depth", "stored", "settled", "reads", "skips", "refreshes", "archived", "windowXZ", "depthPx" }`. Without live depth it is the room as last scanned by the headset.
 
-With live depth the headset's depth image is laid over the same cells five times a second. The field map asks for it by default (`?depth=0` leaves it out); the Mars map only with `?depth=1`. Then something put down about 1 to 3.8 m from the wearer becomes obstacle cells within a second or two, and passable again when it is taken away (this range and rate are not yet checked on the headset). `stats.depthPx` is the depth image's width and height and the samples per side taken from it; `stats.reads` counts the reads. `source` is then `"room-scan+depth"`, and `stats.depth` counts the cells live depth blocks at that moment. Live depth never clears a cell the room scan marked as an obstacle.
+With live depth the headset's depth image is laid over the same cells ten times a second. The field map asks for it by default (`?depth=0` leaves it out); the Mars map only with `?depth=1`. Then something put down within 5 m of the wearer becomes obstacle cells within a second, and passable again when it is taken away (this range and rate are not yet checked on the headset). `stats.depthPx` is the depth image's width and height and the samples per side taken from it; `stats.reads` counts the reads. `source` is then `"room-scan+depth"`, and `stats.depth` counts the cells live depth blocks at that moment. Live depth never clears a cell the room scan marked as an obstacle.
 
 **`nav:request`**
 ```json
@@ -302,8 +302,8 @@ With live depth the headset's depth image is laid over the same cells five times
 }
 ```
 - `status`: `ok`, `blocked` (no path), `arrived`, `cancelled`
-- `points`: room coordinates where the floor arrows go
-- `distanceM`: remaining distance in the room
+- `points`: where the route goes. D's routes are in map metres; the field route is in room coordinates (`frame`, below)
+- `distanceM`: remaining distance, in the same metres as `points`
 - In field mode the route to the marked target is sent with `"targetId": "mark"` and `"frame": "room"`. D's own routes are in map metres and carry no `frame`.
 - `via` (only on D's routes, and only when there are any): the ids of the marked waypoints (`waypoint:set`) the route passes, in order. D's planner takes a waypoint along when that makes the route hardly more costly (`web/src/nav/via.js`); the field route does the same by length (`web/src/field/planner.js`).
 
@@ -317,8 +317,8 @@ With live depth the headset's depth image is laid over the same cells five times
 ```json
 { "id": "suit-temp", "level": "critical", "message": "Ambient temperature is critical", "ts": 1794000000000 }
 ```
-- `level`: `warn` (only the status panel color changes) or `critical` (red flashing screen)
-- `id` values: `suit-temp` (E), `route-blocked` (D), `radiation` (B, decided from `env.json`), `link-lost` (B, Jetson connection lost)
+- `level`: `warn` (alert card, beep, the view lit orange) or `critical` (the same in red, a spoken alert, the route back to base)
+- `id` values: `suit-temp` (E), `route-blocked` (D), `radiation` (B, decided from `env.json`), `link-lost` (B, Jetson connection lost), `hazard-zone` (field, level `warn`: the wearer stands on ground the scan has marked; field map only)
 - On `critical`, D computes a new route to `base`.
 - `radiation` thresholds (starting values, `web/src/core/radiation.js`): `warn` at 300 µGy/day, `critical` at 600 µGy/day, clear below 270. The observed values in `env.json` (about 152–157) raise nothing; `?radWarn=` and `?radCrit=` change them.
 
@@ -367,7 +367,7 @@ B sends the text to the hub, which treats it as speech. Without a hub, B emits `
 ```json
 { "mode": "emergency" }
 ```
-`mode`: `normal`, `emergency`. (`night` and `record` were P2 ideas and are not built; no command sets them.)
+`mode`: `normal`, `emergency`. (`night` and `record` were ideas for later and are not built; no command sets them.)
 
 ---
 
@@ -426,11 +426,12 @@ B sends the text to the hub, which treats it as speech. Without a hub, B emits `
 
 | Direction | Message | Meaning |
 |---|---|---|
-| headset → hub | binary | One JPEG, 640 × 480, about ten a second, only while someone is watching |
+| headset → hub | binary | One JPEG, 1280 × 960 unless set smaller, at most 15 a second, only while someone is watching or a recording runs |
 | headset → hub | `{ "info": { "width", "height", "fps", "ar", "mode", "space", "camera" } }` | When any of these change |
 | hub → headset | `{ "viewers": 1, "tune": { "fovDeg": 58, "tiltDeg": 0 } }` | How many monitor pages are open; at 0 the headset makes no pictures. `tune`, when the camera lens was set on the monitor page (`POST /monitor/tune`): the lens the virtual things are drawn with over the camera picture |
+| hub → headset | `{ "ack": 12 }` | Sent after every picture, counting them. The headset keeps no more than two pictures on their way and sets the JPEG quality by how fast the answers come. The other messages of this socket (`stats`, `ping` / `pong`) are listed at the top of `jetson/marswalk/mirror.py` |
 
-The hub serves `/monitor` (the page), `/monitor.mjpg` (the pictures as one multipart response) and `/monitor.json` (state, including a rescue signal that is up).
+The hub serves `/monitor` (the page), `/monitor.mjpg` (the pictures as one multipart response), `/monitor.json` (state, including a rescue signal that is up) and `/monitor/record` (`POST { "on": true }` starts a recording of the pictures and the voices, `false` stops it).
 
 ### Ambient temperature thresholds (starting values)
 
@@ -444,7 +445,7 @@ The hub serves `/monitor` (the page), `/monitor.mjpg` (the pictures as one multi
 
 The level follows the temperature in both directions. The 1 °C margin on the way down (`--margin-c`) only keeps a reading that hovers on a threshold from raising and clearing over and over. Until 2026-11-14 an alert never stepped down and cleared only below 28 °C, so the alarm kept ringing as critical while the display showed 29 °C.
 
-Chosen so that holding the sensor in a hand reaches them in the demo. E tunes them after measuring with the real sensor.
+Chosen so that holding the sensor in a hand reaches them in the demo. They are still the starting values.
 
 ---
 

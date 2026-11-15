@@ -1,6 +1,6 @@
 # Resource analysis
 
-What we found by connecting to the five resources published on the challenge's Resources tab. Checked on 2026-11-13.
+What we found by connecting to the five resources published on the challenge's Resources tab. Checked on 2026-11-13. The letters A to F are the team's six parts ([README, Team](../README.md#team)).
 
 **Marking**
 
@@ -10,7 +10,7 @@ What we found by connecting to the five resources published on the challenge's R
 
 ## At a glance
 
-> **Status (2026-11-14): every resource below has been turned into files in the repository.** Section 8 lists what was built from which resource and where it is. Section 7 lists what we confirmed along the way. Sections 1–6 are the analysis as written before the hackathon, kept as the record of what we expected.
+> **Status (2026-11-14): every resource below has been turned into files in the repository.** Section 8 lists what was built from which resource and where it is. Section 7 lists what we confirmed along the way. Section 9 lists data on the resource sites that we did not use, and why. Sections 1–6 are the analysis as written before the hackathon, kept as the record of what we expected.
 
 - **Exploration site**: the **Gediz Vallis channel** on Mount Sharp, Gale Crater. It does not overlap the boxwork example in the challenge text.
 - **Six or more layers are usable**, from four different missions (MRO, Mars Odyssey, MGS, MSL Curiosity).
@@ -240,7 +240,7 @@ Reference path: from sol 4098 to 4312 Curiosity drove about 1,001 m and climbed 
 
 Layers 1–6 alone satisfy the challenge text's "at least three kinds of data" and "data from multiple NASA science missions".
 
-The terrain file includes HRSC data from ESA's Mars Express. USGS and NASA produce and distribute the file, but the submission text will state that ESA data is included.
+The terrain file includes HRSC data from ESA's Mars Express. USGS and NASA produce and distribute the file; the submission text states that ESA data is included.
 
 ---
 
@@ -305,8 +305,8 @@ Everything below is in the repository. One script (`data-pipeline/build_data.py`
 
 | # | Resource | Used for |
 |---|---|---|
-| R1 | JPL Mars Trek | Optical and thermal layers (tiles); the geologic unit lookup; the layer index used to answer the "missing data" list in the README |
-| R2 | USGS-NASA Planetary Geologic Mapping Program | The geologic unit of the site, shown in the status panel and legend |
+| R1 | JPL Mars Trek | Optical and thermal layers (tiles); the geologic unit lookup; the layer index used to answer the "missing data" list in section 9 |
+| R2 | USGS-NASA Planetary Geologic Mapping Program | The geologic unit of the site, kept in `layerset.json`. The HUD showed it at first and no longer does |
 | R3 | Curiosity's proposed path up Mount Sharp | Not data. The idea of drawing a route against regions of interest; we draw the rover's actual path instead |
 | R4 | NASA Worldview | Not Mars data. Reference for the layer switching screen |
 | R5 | Mars Perseverance Raw Images Gallery | The same NASA service for Curiosity gives the photos in `pov.json`, pinned to map positions |
@@ -333,7 +333,7 @@ The source files the pipeline downloads are kept out of the repository (about 10
 | File | Content |
 |---|---|
 | [DATA.md](DATA.md) | What each data file is, how it was made, how accurate it is, the legend, credits and terms of use |
-| [SUBMISSION.md](SUBMISSION.md) | The submission rules and the draft submission text, split by the form's fields |
+| [SUBMISSION.md](SUBMISSION.md) | The submission rules and the submission text, split by the form's fields |
 | This file, section 7 | What was confirmed while doing the work |
 
 ### What the resources could not give us
@@ -341,3 +341,33 @@ The source files the pipeline downloads are kept out of the repository (about 10
 - **Spectral data at walking scale.** Mars Trek has no CRISM raster covering our site; what covers it is global and coarser than our whole map. The `spectral` kind stays empty.
 - **Anything sharper than HiRISE.** The best optical data is 0.64 m per pixel, and JPL reported that the sulfur stones at our survey site were too small for HiRISE to see. This is the gap the helmet's own sensor is meant to fill.
 - **A live feed.** The radiation and weather values are a recording of one Martian day.
+
+---
+
+## 9. Data on the five resource sites that we did not use (C, 2026-11-14)
+
+A teammate compared the README of the time with the five resource sites and listed data we were not using (2026-11-14, branch `main`). C went through the list the same day. The "Status" column is what C found; items marked "checked" were checked against the live Mars Trek layer index (225 products, 39 covering our site) or against the files in `web/public/data/`.
+
+| ID | Missing item | Source | Status (C, 2026-11-14) |
+|---|---|---|---|
+| M1 | Spectral and mineral data (CRISM, OMEGA) | Mars Trek, Curiosity route page | **Checked: nothing usable at our scale.** Trek's CRISM raster indicators cover other regions, not Gale. What covers our site is global: a map of hydrous mineral detections (OMEGA, CRISM) and TES mineral abundance maps at kilometers per pixel, less than one pixel across our 2 km map. `spectral` stays empty, and we say so |
+| M2 | THEMIS daytime thermal image | Mars Trek | **Checked: available** (`THEMIS_DayIR_ControlledMosaics_100m_v2_oct2018`), not added. Same 81 m per pixel as the night image we use |
+| M3 | MOLA·HRSC global DEM (about 200 m) | Mars Trek, USGS | **Not needed.** It was the fallback if the 3.6 GB file failed; the 1 m terrain is read directly |
+| M4 | CTX optical mosaic (about 5–6 m) | Mars Trek | **Checked: covers our site** (`curiosity_ctx_mosaic`, `Gale_CTX_BlockAdj_dd`), not needed. HiRISE at 0.64 m covers the whole map |
+| M5 | Place names, landing sites, exploration zones, thematic layers | Mars Trek | Global overlays exist (dune fields, exploration zones and others). Not checked for our site |
+| M6 | Curiosity planned route and science regions | Curiosity route page | A single GIF, not data. We use the rover's actual path instead (`traverse.json`) |
+| M7 | Trek subsetting, elevation profile | Mars Trek | **Not needed.** The terrain file accepts partial requests, so only the map window is read |
+| M8 | Trek rock detection | Mars Trek | Not checked. It is a tool, not a layer in the index |
+| M9 | Trek sun angle | Mars Trek | Not checked |
+| M10 | Trek WMTS tile addresses and structure | Mars Trek | **Done.** Section 2 of this file |
+| M11 | Source, metadata and position link of Curiosity photos | NASA raw images API | **Done.** `pov.json`: photos matched to map positions by site and drive number ([DATA.md](DATA.md) section 4) |
+| M12 | Worldview screen features (compare, measure, time slider) | Worldview | UI ideas, not data. For F |
+
+**What the five sites do not have**
+
+- Atmospheric (REMS) and radiation (RAD) data: **done**, both from the Planetary Data System, in `env.json`.
+- Chemical and geophysical data: still empty.
+- A finer geologic map of Mount Sharp or Gale Crater: not found.
+- Coordinates of Curiosity's planned route: not found.
+
+The teammate's list also pointed to a `docs/MISSING_DATA.md` with evidence per item. That file was not in the branch, so it is not linked here.

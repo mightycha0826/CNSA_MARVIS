@@ -1,5 +1,7 @@
 # arduino/ — temperature sensor on the suit (role E)
 
+The letters A to F are the team's six parts ([README, Team](../README.md#team)).
+
 The sensor measures the air around the wearer: the app shows it as the **ambient temperature**. The field it travels in is still called `suitTempC`.
 
 `suit_temp/suit_temp.ino` reads one temperature sensor and prints one JSON line per second at 115200 baud ([docs/INTERFACES.md](../docs/INTERFACES.md) section 5):
@@ -55,4 +57,4 @@ Start the hub (`jetson/README.md`). The log prints `arduino data, source=arduino
 
 ## Status
 
-The firmware is flashed on the team's Mega 2560 and the hub reads it (`no_sensor` until a sensor is wired). Detection of each sensor type has not been tried with real parts yet.
+The firmware is flashed on the team's Mega 2560. A sensor is wired and the hub reads it (2026-11-14: warming it by hand raised the alerts). Which of the supported sensor types is wired was not written down; the other types have not been tried with real parts.

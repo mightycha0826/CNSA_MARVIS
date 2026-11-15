@@ -1,6 +1,7 @@
 # jetson/ — Jetson hub (role E)
 
 Everything outside the headset: the temperature sensor on the suit (ambient temperature: the air around the wearer), alerts, voice assistant, web app serving.
+The letters A to F are the team's six parts ([README, Team](../README.md#team)).
 All formats follow [docs/INTERFACES.md](../docs/INTERFACES.md) sections 4–6. Headset connection: [QUEST_CONNECT.md](QUEST_CONNECT.md). Firmware: [../arduino/](../arduino/README.md).
 
 ## One-time setup
@@ -57,7 +58,7 @@ What makes it robust:
 - **The headset only streams audio; the hub decides what is speech.** A neural detector copes with noise and the headset's automatic gain, where a loudness threshold in the browser did not.
 - **The microphone is ignored while the hub is speaking**, so it never hears its own voice as a command.
 - **Short commands** ("Status", "Base", "Thermal") and **fuzzy matching**: "thermo mat" still means "thermal map"; phrases under 5 letters must match exactly, so "shop" is not "stop".
-- **The microphone permission is asked on the 2D page**, before the AR session starts, and the page shows `Voice: mic on · audio running` above the Start AR button when it is ready.
+- **The microphone permission is asked on the 2D page**, before the AR session starts, and the page shows `Voice: mic on · audio running` above the two start buttons (Mars map, Field map) when it is ready.
 - **The headset reports its microphone state** (`voice.status`) and the hub logs it, with the input level every 10 s. Everything the recognizer hears, matched or not, goes to `logs/heard.log`.
 
 ### Adding or changing a command
@@ -156,7 +157,7 @@ journalctl -u marswalk-hub -f
 
 ## Checked with the real web app
 
-With `web/dist` built, the hub serves B's app and `link.js` connects to it (`http://localhost:8080/?jetson=ws://localhost:8080/ws&mock=data,hazard` on the Jetson itself): telemetry reaches the status panel, a critical temperature puts the HUD in emergency mode, and spoken "Take me to the survey site" / "Show the thermal map" arrive as `nav:request` / `layer:toggle`.
+With `web/dist` built, the hub serves B's app and `link.js` connects to it (`http://localhost:8080/?jetson=ws://localhost:8080/ws&mock=data,hazard` on the Jetson itself): telemetry reaches the ambient temperature tile, a critical temperature puts the HUD in emergency mode, and spoken "Take me to the survey site" / "Show the thermal map" arrive as `nav:request` / `layer:toggle`.
 
 The web app's voice link is `web/src/core/voice.js`: it streams the microphone continuously and plays the hub's speech (`urgent` cuts what is playing). `?voice=0` turns it off; `?mockMic=a.wav,b.wav` uses audio files as the microphone. Checked in a PC browser with `mockMic`: "Thermal" switched the map layer and "Navigate" made D's planner compute the route. Not yet confirmed with the headset's own microphone.
 

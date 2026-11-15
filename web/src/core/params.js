@@ -2,7 +2,7 @@
 //
 // Every switch and number that can be set from the address (?mock=1, ?sound=0, ?walkScale=50 ...)
 // is read through this module, so `grep "params\.\|isOff(\|numberOr(\|finiteOr("` finds them all.
-// What each one does is documented where it is used and in the README ("How to run").
+// What each one does is documented where it is used and in docs/USAGE.md.
 //
 //   import { params, isOff, numberOr, finiteOr } from '../core/params.js';
 //   params.get('lang')         the raw value, or null when it is not in the address

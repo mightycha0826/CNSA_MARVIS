@@ -1,7 +1,7 @@
 # Data guide (slot C)
 
 What the files in `web/public/data/` are, where they came from, how they were processed, and how far they can be trusted.
-Written for the people building the map, route and HUD (D, F) and for whoever writes the submission text.
+Written for the people building the map, route and HUD (D, F) and for whoever writes the submission text. The letters A to F are the team's six parts ([README, Team](../README.md#team)).
 
 - Format contract: [INTERFACES.md](INTERFACES.md) section 2
 - Analysis of the source data: [RESOURCES.md](RESOURCES.md)
@@ -44,7 +44,7 @@ This covers five of the data kinds named in the challenge text (topographic, opt
 
 **Reference path.** The rover drove 593 m by its odometry from the base position to the survey site and climbed 45.2 m (sol 4098 → 4200). Joining the stops inside the extent with straight lines gives 518 m; the straight-line distance between the two points is 358 m.
 
-**Demo region.** `[265, 262, 285, 282]`: an 80 m square centered on the survey site, mapped onto a 4 m room (1:20). Inside it the slope has a median of 10.7° and a maximum of 26.0°, the relief is 17.4 m, and it contains 11 rover stops. **This is a proposal, to be fixed with D.** Base is outside this region (about 360 m away), so D has to decide how "return to base" is shown inside the room.
+**Demo region.** `[265, 262, 285, 282]`: an 80 m square centered on the survey site, mapped onto a 4 m room (1:20). Inside it the slope has a median of 10.7° and a maximum of 26.0°, the relief is 17.4 m, and it contains 11 rover stops. **The app does not use it.** It was a proposal for laying a part of the map on the room floor. D's planner works in map metres on the whole grid, and a route is scaled to the room route by route ([USAGE.md](USAGE.md) section 2). The entry is still in `layerset.json`.
 
 ## 3. Coordinates and grid
 
@@ -64,7 +64,7 @@ This covers five of the data kinds named in the challenge text (topographic, opt
 - **How accurate it is:** against the tilt the rover itself measured at its 178 stops, the layer is off by 1.90° on average (mean absolute error; bias −0.82°, correlation 0.82), and within 3° at 81 % of the stops. Where the layer shows a slope *s*, the rover measured 0.97 × *s* + 1.1° on average, give or take 2.4°: a place the layer gives as 17° was 17.6° on average, and 20° or more about one time in seven. Read a slope from this layer as ± 2°. (The rover's own tilt differs by 1.3° between stops less than half a metre apart (8 pairs), so not all of the 1.90° is the layer's.)
 - **What that check cannot say:** the rover kept to gentle ground. Only 9 of its 178 stops are on cells the layer puts above 15°, and one above 20°. The layer is checked where one would walk, hardly at the 20° limit and not on the steep ground beyond it (which the planner closes).
 - **Why not a finer baseline:** we tried (2026-11-15). The 1 m terrain is too noisy at short distances: slope over 2 to 4 m agrees with the rover *worse* (2.0° to 2.2°), over 8 to 10 m best (1.84°), and beyond that worse again. The layer's 8 m baseline is where this terrain model is most accurate; no way of computing slope from it that we tried is better by more than 0.07° (the best: a plane fitted over 8 m, 1.84° against the layer's 1.90°), which is within the scatter of 178 stops. `validate.py` repeats the comparison whenever the 1 m terrain is in the cache (`slope_baseline_study` in `validation_report.json`).
-- **Credit:** USGS Astrogeology Science Center. The source includes ESA Mars Express HRSC data, which must be stated in the submission text.
+- **Credit:** USGS Astrogeology Science Center. The source includes ESA Mars Express HRSC data, which the submission text states.
 
 ### Optical image `optical.png`
 
@@ -97,7 +97,7 @@ This covers five of the data kinds named in the challenge text (topographic, opt
 | `airTempK` | 205.8 to 267.7 K (−67 to −5 °C) | REMS MODRDR, `AMBIENT_TEMP` |
 
 - **Radiation is the instrument's value as reported.** It is the `[DOSIMETRY_TOTAL_DOSE_E]` value in the RAD file, without the corrections applied in papers. Of 88 observations, 2 carrying a quality (QC) flag were dropped and 86 used. The E detector is a plastic scintillator, the one closer to human tissue.
-- **It changes little within the day.** Radiation stays between 152 and 157. Ordinary values will not trigger a radiation alert, so to show one in the demo the threshold or the method has to be agreed with B.
+- **It changes little within the day.** Radiation stays between 152 and 157. Ordinary values do not trigger a radiation alert: the thresholds are 300 and 600 µGy/day ([INTERFACES.md](INTERFACES.md) section 3).
 - **Sanity checks:** temperature peaks at 14:00; pressure is highest before dawn and lowest at 16:00; radiation is higher when pressure is lower (correlation −0.74), the direction expected when there is less atmosphere overhead.
 - **Time:** `localTime` is local true solar time (LTST), and both instruments are binned on the same clock. The RAD documentation calls its observation time LMST, but it is LTST: the REMS label ties the spacecraft clock to UTC, RAD gives UTC per observation, and looked up that way the RAD times match the REMS LTST column to within 10 seconds. `build_data.py` runs this check on every build and stops if the two disagree by more than 2 minutes.
 - `sourceUrls` holds the addresses of the two source files. The `note` field is explanatory and the loader does not read it.
@@ -115,7 +115,7 @@ This covers five of the data kinds named in the challenge text (topographic, opt
 
 ### Geologic unit
 
-`site.geologicUnit` in `layerset.json` holds `Htu` (Hesperian transition undivided unit, USGS SIM 3292). The whole map is one unit, so it is used only as one line in the legend.
+`site.geologicUnit` in `layerset.json` holds `Htu` (Hesperian transition undivided unit, USGS SIM 3292). The whole map is one unit. The app does not show it.
 
 ## 5. Legend (for F)
 
@@ -155,7 +155,7 @@ Both are plots of NASA data drawn by a script, not AI-generated images. A line u
 | Optical image versus terrain | Shading computed from the terrain matches the optical image best within 1 cell (4 m). The correlation is only 0.29, so we can say no more than "not off by much more than 4 m" |
 | Format | Grid length, empty cells, min/max, image size, source addresses and coordinates all match INTERFACES |
 
-It was also checked in a browser: the built app opened with `?mock=link,hazard` loads these files and emits `layers:ready` and `env:update`, and the HUD shows the real values. **It has not been checked on the headset.**
+It was also checked in a browser: the built app opened with `?mock=link,hazard` loads these files and emits `layers:ready` and `env:update`, and the HUD shows the real values. **No separate check of the data files on the headset was recorded.**
 
 ## 7. Choosing the slope criterion (with D)
 
@@ -172,7 +172,7 @@ The shortest path from base to the survey site stepping only on cells at or belo
 - The straight-line distance is 358 m; the path the rover drove is 518 m (joining its stops).
 - **A 10° limit cuts the route.** From 15° up the same path results. The tilt the rover took inside this extent has a median of 9.1°, a 90th percentile of 15.4° and a maximum of 22.4°.
 
-### Proposed rule: avoid above 15°, close above 20°
+### The rule: avoid above 15°, close above 20°
 
 We found evidence for the slopes that people in spacesuits have walked. Both sources are about the Moon; we found nothing for Mars.
 
@@ -181,7 +181,7 @@ We found evidence for the slopes that people in spacesuits have walked. Both sou
 | **Below 15°** | "The astronauts climbed up to 150 m during the Apollo missions and walked on slopes of <15°." | Iqbal, Head et al., *Astronaut experiences on the slopes along Apollo EVAs*, EPSC2024-196 ([abstract](https://meetingorganizer.copernicus.org/EPSC2024/EPSC2024-196.html), read in full) |
 | **Below 20°** | On the first Artemis walking missions: "Any traverse needs to be on slopes less than 20 degrees." (David Kring, LPI) | Universe Today 2023 ([article](https://www.universetoday.com/articles/lunar-astronauts-will-need-easy-walking-trails-around-the-moons-south-pole), read in full. An article quoting a researcher, not a NASA requirements document) |
 
-- So we propose that **route cost rises quickly above 15° and cells above 20° are closed**. 69.7% of our map is at or below 20°.
+- So we proposed that **route cost rises quickly above 15° and cells above 20° are closed**, and D's planner uses this rule ([web/src/nav/README.md](../web/src/nav/README.md)). 69.7% of our map is at or below 20°.
 - These figures are from the Moon (1/6 g). Mars (0.38 g) may differ. The submission text says the limits are "taken from Apollo walking experience and Artemis walking plans."
 - The rover's tilt record is what the rover took, not a human standard. Still, the slope where the rover stopped on this stretch (median 8.6°, maximum 14.5°) is inside 15°, which is consistent with the rule.
 
@@ -216,7 +216,7 @@ The challenge's Resources tab says: "For non-U.S. Government websites, participa
 
 ## 9. Limits to keep in mind
 
-- Not run on the headset. If `optical.png` (7.8 MB, 4096 pixels) is too heavy, change `OPTICAL_PX` to 2048 in `build_data.py` and rebuild.
+- No check of the data files on the headset was recorded (the app itself was run there: [README](../README.md#verification-level)). If `optical.png` (7.8 MB, 4096 pixels) is too heavy, change `OPTICAL_PX` to 2048 in `build_data.py` and rebuild.
 - The optical and thermal images are grayscale, and thermal brightness is not temperature.
 - Radiation is the uncorrected instrument value, and one day's record.
 - The exact position of the cracked sulfur rock is unknown. The survey site is where that day's drive ended.

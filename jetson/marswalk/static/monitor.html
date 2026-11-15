@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>MARVIS monitor</title>
+<title>Project Marvis monitor</title>
 <style>
   :root { color-scheme: dark; }
   html, body { height: 100%; margin: 0; }
@@ -30,15 +30,23 @@
   #views button:first-child { border-radius: 6px 0 0 6px; }
   #views button:last-child { border-radius: 0 6px 6px 0; margin-left: -1px; }
   #tune b { color: #d7dde8; font-weight: 600; min-width: 3.2em; text-align: center; display: inline-block; }
-  #stats { flex-basis: 100%; color: #7c8798; font-size: 12px; font-variant-numeric: tabular-nums; }
-  #stats[hidden] { display: none; }
+  #controls button:disabled { opacity: 0.5; cursor: default; }
+  #controls #rec { color: #f87171; }
+  #controls #rec.on { background: #b91c1c; border-color: #ef4444; color: #fff; }
+  #recinfo.old { opacity: 0.5; }
+  #recinfo .warn { color: #fbbf24; }
+  #recinfo a, #recs a { color: #93c5fd; }
+  #stats, #recs { flex-basis: 100%; color: #7c8798; font-size: 12px; font-variant-numeric: tabular-nums; }
+  #stats[hidden], #recs[hidden] { display: none; }
+  #recs summary { cursor: pointer; width: fit-content; }
+  #recs div { padding: 2px 0 0 14px; }
   body.full header, body.full footer { display: none; }
   footer { padding: 8px 16px; color: #7c8798; border-top: 1px solid #1c212b; font-size: 12px; }
 </style>
 </head>
 <body>
 <header>
-  <h1>MARVIS monitor</h1>
+  <h1>Project Marvis monitor</h1>
   <span id="state"><span class="dot"></span><span id="text">Connecting to the hub</span></span>
   <span id="controls">
     <span id="views" title="Whole view: all the wearer sees. Camera: the camera picture fills the frame">
@@ -50,18 +58,19 @@
       tilt
       <button data-k="tiltDeg" data-d="-1" aria-label="Tilt up">−</button><b id="tilt"></b><button data-k="tiltDeg" data-d="1" aria-label="Tilt down">+</button>
     </span>
-    <button id="rec" title="Record the pictures with the wearer's voice and the hub's, for the demo video. Kept on the Jetson in jetson/recordings/">● Record</button>
+    <button id="rec" title="Record the pictures with the wearer's voice and the hub's, for the demo video. Kept on the Jetson in jetson/recordings/; an MP4 is made after the stop">● Record</button>
     <span id="recinfo"></span>
     <button id="full" title="The picture alone. F does the same; F or Esc comes back">Fullscreen</button>
   </span>
   <div id="stats" hidden></div>
+  <details id="recs" hidden><summary>Last recordings</summary><div id="reclist"></div></details>
 </header>
 <div id="rescue" hidden></div>
 <main>
   <img id="view" alt="What the headset app is drawing">
   <div id="wait" hidden></div>
 </main>
-<footer>Shows what the app draws, from the wearer's head: HUD, map, menus, pointer, arrows, obstacle outline, plus a 1 m floor grid and dots on the hand joints. The room is behind it when the headset's browser gave the app a camera. If the grid does not lie flat on the real floor, set the camera lens at the top right: field of view until the 1 m squares fit the floor near and far, tilt until the grid sits on the floor. Whole view shows all the wearer sees, Camera fills the frame with the camera picture. The hub keeps what was set. F shows the picture alone.</footer>
+<footer>Shows what the app draws, from the wearer's head: HUD, map, menus, pointer, arrows, obstacle outline, plus a 1 m floor grid and dots on the hand joints. The room is behind it when the headset's browser gave the app a camera. If the grid does not lie flat on the real floor, set the camera lens at the top right: field of view until the 1 m squares fit the floor near and far, tilt until the grid sits on the floor. Whole view shows all the wearer sees, Camera fills the frame with the camera picture. The hub keeps what was set. F shows the picture alone. Record keeps the pictures with the wearer's voice and the hub's in a file on the Jetson, also with this page closed, and makes an MP4 of it after the stop.</footer>
 <script>
   const view = document.getElementById('view');
   const text = document.getElementById('text');
@@ -146,41 +155,91 @@
   // Recording: the hub writes the pictures and the voices to a file; an MP4 is made after the stop.
   const rec = document.getElementById('rec');
   const recinfo = document.getElementById('recinfo');
+  const recs = document.getElementById('recs');
+  const reclist = document.getElementById('reclist');
   let recording = false;
+  let recBusy = false;  // a press is on its way to the hub
+  let recError = null;  // { text, until }: why the last press did nothing, shown for a while
+  const mmss = (sec) => `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(Math.floor(sec % 60)).padStart(2, '0')}`;
+  const megabytes = (n) => (n < 1e6 ? 'under 1 MB' : n < 1e9 ? `${Math.round(n / 1e6)} MB` : `${(n / 1e9).toFixed(1)} GB`);
   rec.addEventListener('click', async () => {
-    rec.disabled = true;
+    const on = !recording;
+    let error = null;
+    recBusy = rec.disabled = true;
     try {
-      const r = await (await fetch('/monitor/record', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ on: !recording }) })).json();
-      if (r.error) recinfo.textContent = 'Recording: ' + r.error;
-    } catch { recinfo.textContent = 'Recording: the hub does not answer'; }
-    rec.disabled = false;
+      const resp = await fetch('/monitor/record', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ on }) });
+      const r = await resp.json().catch(() => null);
+      if (!r) error = 'this hub cannot record: an older one is running, restart it';
+      else if (r.error) error = r.error;
+    } catch { error = 'the hub does not answer'; }
+    recError = error ? { text: `${on ? 'Not recording' : 'Not stopped'}: ${error}`, until: Date.now() + 8000 } : null;
+    recBusy = false;
     poll();
   });
-  function showRecording(s) {
+  // Lines are made of words and links with dots between them. A line is written anew only when
+  // what it says changed: a link that is replaced under the mouse does not take the click.
+  const written = new WeakMap();
+  function write(el, key, parts) {
+    if (written.get(el) === key) return;
+    written.set(el, key);
+    el.replaceChildren();
+    parts.forEach((part, i) => el.append(i ? ' · ' : '', part));
+  }
+  const warn = (words) => { const el = document.createElement('span'); el.className = 'warn'; el.textContent = words; return el; };
+  const file = (x, ext, label) => { const a = document.createElement('a'); a.href = `/recordings/${x.name}.${ext}`; a.textContent = `${label} ${megabytes(x[ext])}`; return a; };
+  // Where a recording of the list stands, and its files to fetch once they are whole.
+  function standing(x) {
+    if (x.state === 'recording') return ['recording now'];
+    if (x.state === 'converting') return ['making the MP4 …'];
+    const parts = x.state === 'failed' ? [warn('the MP4 could not be made')] : [];
+    if (x.mp4) parts.push(file(x, 'mp4', 'MP4'));
+    if (x.mkv) parts.push(file(x, 'mkv', x.mp4 ? 'master MKV' : 'MKV'));
+    return parts;
+  }
+  const listed = (x) => (x.state === 'recording' ? [x.name] : [x.name, x.state, x.seconds, x.mkv, x.mp4]); // what a line of it says
+  function showRecording(s, live) {
     const r = s.recording;
+    const list = s.recordings || [];
     recording = !!(r && r.on);
+    rec.disabled = recBusy;
     rec.textContent = recording ? '■ Stop' : '● Record';
-    rec.style.color = recording ? '#fff' : '#f87171';
-    rec.style.background = recording ? '#b91c1c' : '';
-    const mmss = (sec) => `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(Math.floor(sec % 60)).padStart(2, '0')}`;
+    rec.classList.toggle('on', recording);
+    recinfo.classList.remove('old');
+    if (recError && Date.now() > recError.until) recError = null;
+    // Beside the button: the recording that runs, or how the last one of this hub ended.
+    const parts = recError ? [warn(recError.text)] : [];
+    let key = [recError?.text];
     if (recording) {
-      recinfo.textContent = `REC ${mmss(r.seconds || 0)} · ${((r.bytes || 0) / 1e6).toFixed(0)} MB${r.audio ? '' : ' · no sound'}${r.dropped ? ` · ${r.dropped} pictures dropped` : ''}`;
-      return;
+      parts.push(`REC ${mmss(r.seconds || 0)}`, megabytes(r.bytes || 0));
+      if (!r.audio) parts.push('pictures only, no sound');
+      if (r.dropped) parts.push(warn(`${r.dropped} pictures left out`));
+      if (!live) parts.push(warn('no pictures are coming'));
+      key.push(r, live);
+    } else if (r) {
+      const made = list.find((x) => x.name === r.name);
+      parts.push(`${r.name} (${mmss(r.seconds || 0)})`);
+      if (r.stopped) parts.push(warn(`ended by itself: ${r.stopped}`));
+      if (!r.frames) parts.push(warn('no pictures came'));
+      if (made) parts.push(...standing(made));
+      else parts.push('its files are gone');
+      key.push(r, made && listed(made));
     }
-    const last = (s.recordings || [])[0];
-    recinfo.textContent = '';
-    if (!last) return;
-    const link = (ext, label) => { const a = document.createElement('a'); a.href = `/recordings/${last.name}.${ext}`; a.textContent = label; a.style.color = '#93c5fd'; a.style.marginLeft = '6px'; return a; };
-    recinfo.append(`${last.name}${last.seconds ? ' (' + mmss(last.seconds) + ')' : ''}: `);
-    if (last.state === 'converting') recinfo.append('making the MP4 …');
-    else if (last.state === 'failed') recinfo.append('the MP4 could not be made;');
-    if (last.mp4) recinfo.append(link('mp4', 'MP4'));
-    if (last.mkv) recinfo.append(link('mkv', last.mp4 ? 'master (MKV)' : 'MKV'));
+    write(recinfo, JSON.stringify(key), parts);
+    // Under the header: the last five, folded away until asked for.
+    const five = list.slice(0, 5);
+    recs.hidden = !five.length;
+    if (written.get(reclist) !== JSON.stringify(five.map(listed))) {
+      written.set(reclist, JSON.stringify(five.map(listed)));
+      reclist.replaceChildren(...five.map((x) => {
+        const line = document.createElement('div');
+        write(line, '', [x.name + (x.seconds ? ` (${mmss(x.seconds)})` : ''), ...standing(x)]);
+        return line;
+      }));
+    }
   }
   async function poll() {
     try {
       const s = await (await fetch('/monitor.json', { cache: 'no-store' })).json();
-      showRecording(s);
       const fps = before ? Math.max(0, s.frames - before.frames) / ((Date.now() - before.at) / 1000) : 0;
       before = { frames: s.frames, at: Date.now() };
       const rescue = document.getElementById('rescue');
@@ -191,6 +250,7 @@
           (r.suitTempC != null ? ` · suit ${r.suitTempC} °C` : '') + (r.acknowledged ? ` · acknowledged by ${r.by}` : ' · not acknowledged yet');
       }
       const live = s.sources > 0 && s.ageS !== null && s.ageS < 2;
+      showRecording(s, live);
       state.className = live ? 'live' : s.frames ? 'stale' : '';
       const i = s.info || {};
       if (Date.now() - tunedAt > 2500) { // not while the buttons are being pressed
@@ -216,6 +276,8 @@
       state.className = '';
       text.textContent = 'The hub does not answer';
       showStats(null);
+      rec.disabled = true; // nothing to press against; what stands beside it is the last that was heard
+      recinfo.classList.add('old');
     }
   }
   poll();

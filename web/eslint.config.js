@@ -1,4 +1,4 @@
-// Lint rules for web/ (README section 13). ESLint is not a dependency of the app: run it one-off with
+// Lint rules for web/ (docs/DEVELOPMENT.md section 3). ESLint is not a dependency of the app: run it one-off with
 //
 //   npx --yes eslint@9 src scripts
 //

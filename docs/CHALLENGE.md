@@ -1,7 +1,7 @@
 # Challenge text — Interplanetary Survival Guide: Martian Map
 
-> The original text, copied from the challenge page by the team lead. Every quotation in the README is taken verbatim from this file.
-> The contents and analysis of the Resources tab are in [RESOURCES.md](RESOURCES.md).
+> The original text, copied from the challenge page by the team lead. Every quotation of the challenge in our documents is taken verbatim from this file.
+> The contents and analysis of the Resources tab are in [RESOURCES.md](RESOURCES.md). Which part of Project Marvis answers which sentence is in the [table at the end](#how-project-marvis-answers-the-text).
 
 - Event: 2026 NASA Space Apps Challenge
 - Difficulty: Intermediate
@@ -39,3 +39,22 @@ You may (but are not required to) consider the following:
 - Think about whether your mission might use rovers or other robotic systems to help transport the crew and their tools, or whether the astronauts might work in pairs to accomplish more science.
 
 For data and resources related to this challenge, refer to the Resources tab at the top of the page. More resources may be added before the hackathon begins.
+
+---
+
+## How Project Marvis answers the text
+
+This part is ours, not the challenge's. The numbers Q1 to Q10 are used in the other documents ("challenge text Q4"). What each part of the entry does is in the [README](../README.md).
+
+| # | Challenge text | In our entry |
+|---|---|---|
+| Q1 | "create a layered, integrated view of a location or route on the Martian surface that pulls together data from multiple NASA science missions" | **Core task.** The Mars map with its layers, from four NASA missions |
+| Q2 | "create a map, tool, or interface a Mars astronaut could use during a surface exploration mission, using NASA data and tools" | **Core task.** The whole HUD |
+| Q3 | "You might start by identifying some scientific goals for your mission and the location the astronaut will explore" | Mission scenario: the sulfur stones of Gediz Vallis channel |
+| Q4 | "You may consider including at least three kinds of data—optical, thermal, spectral, topographic, geophysical, atmospheric, radiation, and chemical are a few examples" | Five kinds: topographic, optical, thermal, radiation, atmospheric |
+| Q5 | "they are built for regional and global views rather than the hyperlocalized areas astronauts will target" | The field map: the helmet's own sensor fills the short range where orbital data is weak |
+| Q6 | "NASA’s first priority is always astronaut safety" | Readings and alerts, the return to base on a critical alert, the rescue signal |
+| Q7 | "include a route map that shows where the astronaut will travel to accomplish their scientific objectives while avoiding significant obstacles such as large rock formations" | The route planner on the slope layer; on the field map the route around scanned obstacles |
+| Q8 | "as a heads-up-display (HUD) projected on the spacesuit’s helmet visor" | HUD format (allowed by the text) |
+| Q9 | "Consider how you might include these point-of-view images as part of your map" | Curiosity's photos at the base and the survey site are prepared in the data (`pov.json`). The app does not show them yet |
+| Q10 | "Astronauts will conduct Mars surface science wearing spacesuits and possibly carrying scientific equipment and other supplies. Consider how this might impact their mobility" | Control by palm, pointing and voice; slope limits taken from what people in suits have walked (our interpretation) |
