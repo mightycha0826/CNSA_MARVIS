@@ -43,7 +43,7 @@ import socket
 import time
 from pathlib import Path
 
-from aiohttp import WSMsgType, web
+from aiohttp import WSCloseCode, WSMsgType, web
 
 log = logging.getLogger("mirror")
 
@@ -108,6 +108,17 @@ def bound_send_buffer(transport) -> bool:
     return True
 
 
+async def close_sockets(sockets):
+    """Close WebSockets from our side, all at once. One whose other end does not answer (a
+    headset out of reach) gets a second, not the ten that aiohttp would wait."""
+    async def close(ws):
+        try:
+            await asyncio.wait_for(ws.close(code=WSCloseCode.GOING_AWAY), 1.0)
+        except (asyncio.TimeoutError, ConnectionResetError, RuntimeError):
+            pass
+    await asyncio.gather(*(close(ws) for ws in list(sockets)))
+
+
 BOUNDARY = "marswalkframe"
 
 
@@ -136,6 +147,7 @@ class Mirror:
         self.clock = time.monotonic      # a test puts its own clock here
         self.wake_s = 2.0                # how often a stream with no new picture looks whether its monitor is still there
         self.fresh = asyncio.Condition()
+        self.closing = False             # the hub is ending: the streams end, see close()
         self.extra = lambda: {}          # more state for /monitor.json (the hub adds the rescue signal)
 
     def routes(self, app: web.Application):
@@ -146,6 +158,14 @@ class Mirror:
         app.router.add_post("/monitor/tune", self.set_tune)
         app.router.add_post("/monitor/record", self.set_record)
         app.router.add_get("/recordings/{name}", self.recording_file)
+
+    async def close(self):
+        """The hub is ending. The apps' connections and the monitors' streams would stay open
+        for ever and the hub would wait for them: they are ended here."""
+        self.closing = True
+        await close_sockets(self.sources)
+        async with self.fresh:
+            self.fresh.notify_all()
 
     def wanted(self) -> int:
         """The "viewers" the app is told: monitor pages open, and one more while a recording runs,
@@ -295,7 +315,9 @@ class Mirror:
         path = self.recorder.folder / name
         if not path.is_file():
             raise web.HTTPNotFound()
-        return web.FileResponse(path, headers={"Content-Disposition": f'attachment; filename="{name}"'})
+        kind = "video/mp4" if name.endswith(".mp4") else "video/x-matroska"   # the second one the system does not know
+        return web.FileResponse(path, headers={"Content-Type": kind,
+                                               "Content-Disposition": f'attachment; filename="{name}"'})
 
     async def set_tune(self, request: web.Request):
         try:
@@ -335,13 +357,15 @@ class Mirror:
         log.info("monitor opened by %s (%d watching)", request.remote, self.viewers)
         seq = -1
         try:
-            while request.transport is not None and not request.transport.is_closing():
+            while not self.closing and request.transport is not None and not request.transport.is_closing():
                 async with self.fresh:
                     try:   # wake up now and then to notice a monitor that went away while no frames came
-                        await asyncio.wait_for(self.fresh.wait_for(lambda: self.frame is not None and self.seq != seq),
-                                               self.wake_s)
+                        await asyncio.wait_for(self.fresh.wait_for(
+                            lambda: self.closing or (self.frame is not None and self.seq != seq)), self.wake_s)
                     except asyncio.TimeoutError:
                         continue
+                if self.closing:
+                    break
                 seq, frame = self.seq, self.frame
                 # write() waits while the connection is full: the pictures that come meanwhile
                 # are skipped (the newest is taken above), not queued behind this one.

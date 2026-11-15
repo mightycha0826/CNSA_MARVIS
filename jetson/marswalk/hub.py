@@ -25,7 +25,7 @@ from aiohttp import WSMsgType, web
 
 from . import intents, speech
 from .maps import MapStore, WaypointStore
-from .mirror import Mirror
+from .mirror import Mirror, close_sockets
 from .record import Recorder
 from .alerts import SUIT_TEMP_MESSAGES, SuitTempAlert, Thresholds
 from .sensors import SuitTemp
@@ -495,9 +495,12 @@ def build_app(hub: Hub) -> web.Application:
                       asyncio.create_task(hub.suit.run())])
 
     async def on_shutdown(app):
-        # First of all, before the connections are waited for: a recording that runs is
-        # finished, not cut off. In a thread, the disk may take a moment.
+        # First of all: a recording that runs is finished, not cut off. In a thread, the disk
+        # may take a moment. Then the connections that never end by themselves are closed, or
+        # the hub would wait for them and be killed while it waits.
         await asyncio.to_thread(hub.recorder.close)
+        await close_sockets(hub.clients)
+        await hub.mirror.close()
 
     async def on_cleanup(app):
         for t in tasks:
@@ -510,8 +513,8 @@ def build_app(hub: Hub) -> web.Application:
 
 async def serve(args):
     hub = Hub(args)
-    # The hub's connections never end by themselves (the headset, the monitor's stream): at
-    # the end they get 2 s, not aiohttp's minute.
+    # At the end the hub closes its lasting connections itself (build_app, on_shutdown); what
+    # is still busy after that, a download, gets 2 s and not aiohttp's minute.
     runner = web.AppRunner(build_app(hub), shutdown_timeout=2.0)
     await runner.setup()
 
