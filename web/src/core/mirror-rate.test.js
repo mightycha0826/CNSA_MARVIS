@@ -183,6 +183,44 @@ test('one jam is one step down, not one for every picture caught in it', () => {
   assert.ok(Math.abs(rate.quality - 0.64) < 1e-9);
 });
 
+test('a single late answer costs nothing; the second in a row does', () => {
+  const rate = createRate(10, { ...RATE, startQ: 0.8 });
+  let t = 0;
+  const one = (took) => {
+    const n = rate.sent(t);
+    rate.acked(n, t + took);
+    t += 1000;
+  };
+  one(10);
+  one(300); // late once
+  one(10);
+  assert.equal(rate.quality, 0.8);
+  one(300);
+  one(300); // twice in a row
+  assert.ok(Math.abs(rate.quality - 0.72) < 1e-9);
+});
+
+test('an overdue picture brings the quality down once and keeps its place in the window', () => {
+  const rate = createRate(15, { ...RATE, startQ: 0.8 });
+  rate.sent(0);
+  rate.sent(60);
+  assert.equal(rate.open(), false);
+  assert.equal(rate.tick(1400), false);
+  assert.equal(rate.quality, 0.8);
+  assert.equal(rate.tick(1600), false); // both overdue: one step, and the window stays shut
+  assert.ok(Math.abs(rate.quality - 0.64) < 1e-9);
+  assert.equal(rate.open(), false);
+  rate.tick(3000);
+  assert.ok(Math.abs(rate.quality - 0.64) < 1e-9, 'not counted again');
+  assert.equal(rate.stats().lost, 1);
+  // The answers come after all (the link delivers in order): the window opens with them.
+  rate.acked(1, 4000);
+  assert.equal(rate.open(), true);
+  // One that never comes is given up after six seconds, so the stream cannot stop for good.
+  assert.equal(rate.tick(6200), true);
+  assert.equal(rate.stats().flying, 0);
+});
+
 test('answers that make no sense are ignored', () => {
   const rate = createRate(15);
   const n = rate.sent(0);
