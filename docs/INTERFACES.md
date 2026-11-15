@@ -396,7 +396,7 @@ B sends the text to the hub, which treats it as speech. Without a hub, B emits `
 | (binary) | 16-bit PCM, mono | (B plays it) |
 | `tts.end` | `{}` | (B ends playback) |
 | `map.stored` | `{ run, cellSizeM, tileCells, tiles: [{ x, z, runs }], startedAt, savedAt, updates }` | `map:stored`. The answer to `map.request`: every tile of the newest run; nothing is sent when no map is stored |
-| `waypoints.stored` | `{ items, count, savedAt }` | `waypoints:stored`. The answer to `waypoints.request`: the marked places as last stored (an empty list when none were). The headset merges it into its own and then sends what the hub lacks |
+| `waypoints.stored` | `{ items, count, savedAt }` | `waypoints:stored`. The answer to `waypoints.request`: the marked places as last stored (an empty list when none were). The headset merges it into its own, except a waypoint that was deleted in this page, and then sends its list when the hub lacks something or still holds a deleted one |
 | `voice.dictation` | `{ "id": 3, "text": "Rock sample by the door." }` | `voice:dictation`. What this headset said after `voice.dictate`, sent to it alone |
 | `rescue.state` | `{ "active": true, "from", "at", "position", "acknowledged": false, "by": null }` | `rescue:state`. To the headset that sent the signal. The other headsets get `alert.raise` `{ "id": "crew-rescue", "level": "warn", "message": "Rescue signal from a crew member" }` and `alert.clear` when it is cancelled |
 

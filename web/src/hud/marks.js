@@ -45,7 +45,7 @@ export function createMarks({ ctx, state, showToast, changed }) {
   // `shelved`, unseen. `runs`: the scan runs whose coordinates it is known to fit.
   const waypoints = new Map();
   let shelved = []; // field waypoints that are not shown: [{ id, label, room, runs }]
-  let merged = false; // the hub's list has been taken in once in this page
+  const deleted = new Set(); // ids of the waypoints deleted in this page: the hub's list must not bring them back
   const scan = { run: null, trusted: false, storedRun: null }; // the scan's run and whether it trusts the stored map (scan/index.js)
   // A waypoint that was just set and may be given a name: { id, until, listening, listenUntil, token }.
   // Its two buttons are on the card over the map and, since "Mark waypoint" is pressed on the
@@ -122,15 +122,15 @@ export function createMarks({ ctx, state, showToast, changed }) {
   }
 
   /**
-   * The hub's list. The first time it arrives in a page it is the list from earlier sessions
-   * and is taken in. After that this page's list is the truth: when the link comes back, a
-   * waypoint that was deleted meanwhile must not return from the hub.
+   * The hub's list: what this page does not have is taken in, except a waypoint that was
+   * deleted in this page (the link was down at the time, or another page stored it again).
+   * Taking in only ever adds, so a second page on the same hub cannot wipe the list.
    */
   function onStoredWaypoints({ items }) {
     if (!Array.isArray(items)) return;
     let added = 0;
-    for (const it of merged ? [] : items) {
-      if (!it?.id || waypoints.has(it.id)) continue;
+    for (const it of items) {
+      if (!it?.id || waypoints.has(it.id) || deleted.has(it.id)) continue;
       if (Array.isArray(it.cell)) {
         const w = { id: it.id, label: it.label ?? '', cell: it.cell };
         waypoints.set(w.id, w);
@@ -146,10 +146,9 @@ export function createMarks({ ctx, state, showToast, changed }) {
     if (scan.trusted) unshelve(scan.storedRun);
     // What was marked or renamed while the link was down is not on the hub yet: now that its
     // list is merged in, send ours.
-    merged = true;
-    // (Also what the hub still has and this page no longer does: it was deleted while the link was down.)
+    // (And when the hub still holds a waypoint that was deleted here.)
     const kept = new Map(items.map((it) => [it?.id, it?.label ?? '']));
-    if (kept.size !== waypoints.size + shelved.length || [...waypoints.values(), ...shelved].some((w) => kept.get(w.id) !== w.label)) saveWaypoints();
+    if (items.some((it) => deleted.has(it?.id)) || [...waypoints.values(), ...shelved].some((w) => kept.get(w.id) !== w.label)) saveWaypoints();
   }
 
   const wpOf = (id) => waypoints.get(id) ?? null;
@@ -372,6 +371,7 @@ export function createMarks({ ctx, state, showToast, changed }) {
       const w = wpOf(pick.id);
       if (naming?.id === pick.id) endNaming(false);
       waypoints.delete(pick.id);
+      deleted.add(pick.id);
       ctx.bus.emit('waypoint:remove', { id: pick.id });
       saveWaypoints();
       showToast(`${w?.label ?? 'Waypoint'} deleted`);
