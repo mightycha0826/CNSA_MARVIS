@@ -1,6 +1,6 @@
-// HUD 캔버스 그리기. AR 세션 안에서는 HTML이 보이지 않으므로 2D 캔버스에 그려 텍스처로 쓴다.
-// 모든 길이는 d(1도에 해당하는 픽셀 수)의 배수이고, 값은 mockups/hud-mockup.html의 CSS에서 가져왔다.
-// 여기 함수들은 상태를 갖지 않는다. index.js가 만든 표시용 값(vm)을 받아 그리기만 한다.
+// Drawing the HUD canvases. HTML is not seen inside an AR session, so the HUD is drawn on 2D canvases that are used as textures.
+// Every length is a multiple of d (the pixels in 1 deg), and the values come from the CSS of mockups/hud-mockup.html.
+// The functions here keep no state. They only draw the display values (vm) that index.js makes.
 
 import { T, O, FONT_FAMILY, RAMPS } from './tokens.js';
 
@@ -34,7 +34,7 @@ function measure(g, str, weight, size) {
   return g.measureText(str).width;
 }
 
-/** 폭에 안 맞으면 끝을 …로 줄인다. */
+/** Cuts the end to … if the text does not fit the width. */
 function fit(g, str, maxW, weight, size) {
   if (measure(g, str, weight, size) <= maxW) return str;
   let s = str;
@@ -76,23 +76,9 @@ function tag(g, str, x, y, d, alignRight = false, outlined = false) {
   return w;
 }
 
-/** Transparent frame: a light line with a thin dark line on each side of it. */
-function frame(g, x, y, w, h, r, lineW, color, outerW, innerW) {
-  const stroke = (inset, width, style) => {
-    g.beginPath();
-    g.roundRect(x + inset, y + inset, w - inset * 2, h - inset * 2, Math.max(0, r - inset));
-    g.strokeStyle = style;
-    g.lineWidth = width;
-    g.stroke();
-  };
-  stroke(outerW / 2, outerW, O.outer);
-  stroke(outerW + lineW + innerW / 2, innerW, O.inner);
-  stroke(outerW + lineW / 2, lineW, color);
-}
-
-// ---- 아이콘 ----
-// Material Symbols Rounded의 모양을 단순하게 직접 그린다 (아이콘 글꼴을 네트워크에서 받지 않기 위해).
-// (cx, cy) 가운데, s 크기, color 채움색, cut 은 아이콘 안쪽 기호의 색(바탕색).
+// ---- icons ----
+// The shapes of Material Symbols Rounded, drawn here in a simple form (so that no icon font is fetched over the network).
+// (cx, cy) centre, s size, color fill colour, cut the colour of the sign inside the icon (the background colour).
 function icon(g, name, cx, cy, s, color, cut = T.row) {
   g.save();
   g.translate(cx, cy);
@@ -395,14 +381,14 @@ export function drawBanner(g, d, vm) {
   text(g, vm.toast, x + 1.2 * d + 1.6 * d + 0.5 * d, h / 2, { weight: 700, size });
 }
 
-// ---- 레이어 탭 + 범례 ----
-// vm: { tabs: [{ id, label, active }], legend: { rampId, min, max, note, src: [줄, ...], keys } | null }
-// 누를 수 있는 칸의 위치(캔버스 픽셀)를 돌려준다: [{ id, x, y, w, h }]
+// ---- layer tabs + legend ----
+// vm: { tabs: [{ id, label, active }], legend: { rampId, min, max, note, src: [line, ...], keys } | null }
+// Returns where the cells that can be pressed are (canvas pixels): [{ id, x, y, w, h }]
 export function drawLayers(g, d, vm) {
   const W = g.canvas.width;
   g.clearRect(0, 0, W, g.canvas.height);
   const hits = [];
-  if (!vm.tabs.length) return hits; // layers:ready 전에는 아무것도 그리지 않는다
+  if (!vm.tabs.length) return hits; // nothing is drawn before layers:ready
   const pad = 0.3 * d;
   const tabH = 3.0 * d;
   const rows = Math.ceil(vm.tabs.length / 2);

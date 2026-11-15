@@ -46,24 +46,23 @@
 import * as THREE from 'three';
 import { config, mock } from './config.js';
 import { mode } from './mode.js';
-
-const q = new URLSearchParams(location.search);
+import { params, isOff, numberOr } from './params.js';
 
 export const MIRROR = {
-  enabled: q.get('mirror') !== '0' && !mock.link,
-  outsideAR: q.get('mirror') === '1',
-  camera: !['0', '1', 'nocam'].includes(q.get('mirror')), // the headset's camera picture behind the mirror; ?mirror=nocam leaves it out
-  cameraName: q.get('mirrorCam'), // ?mirrorCam=camera 1 picks a camera by (part of) its name, when the default choice is the wrong one
+  enabled: !isOff('mirror') && !mock.link,
+  outsideAR: params.get('mirror') === '1',
+  camera: !['0', '1', 'nocam'].includes(params.get('mirror')), // the headset's camera picture behind the mirror; ?mirror=nocam leaves it out
+  cameraName: params.get('mirrorCam'), // ?mirrorCam=camera 1 picks a camera by (part of) its name, when the default choice is the wrong one
   width: 640, // 4:3 like the camera picture. 480 x 360 ran well on the headset, so the picture is a step larger and less compressed
   height: 480,
-  fps: Math.min(20, Math.max(1, Number(q.get('mirrorFps')) || 10)),
+  fps: Math.min(20, Math.max(1, numberOr('mirrorFps', 10))),
   quality: 0.72, // JPEG quality: about 40-60 kB a picture
   fovDeg: 80, // vertical, without a camera picture; 4:3 makes that about 96 degrees across, close to what the wearer sees
   // With the camera picture behind: the lens the picture was taken with. Estimates for the
   // Quest 3's passthrough camera at 4:3 (not published for the browser); the monitor page tunes them.
   lens: {
-    fovDeg: Number(q.get('mirrorFov')) || 58, // vertical
-    tiltDeg: Number(q.get('mirrorTilt')) || 0, // how far the camera looks below the wearer's line of sight
+    fovDeg: numberOr('mirrorFov', 58), // vertical
+    tiltDeg: numberOr('mirrorTilt', 0), // how far the camera looks below the wearer's line of sight
     fovRange: [35, 110],
     tiltRange: [-25, 25],
   },

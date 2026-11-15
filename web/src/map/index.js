@@ -1,32 +1,32 @@
-// map — 손바닥 지도, 레이어 표시 (D, 안현상)
+// map — palm map, layer display (role D)
 //
-// 받는 이벤트: layers:ready, layer:toggle, nav:route, nav:position, hazard:update(P1),
-//              waypoint:set { id, label, cell: [col, row] }, waypoint:remove { id }
+// Receives: layers:ready, layer:toggle, nav:route, nav:position, hazard:update(P1),
+//           waypoint:set { id, label, cell: [col, row] }, waypoint:remove { id }
 // What stands on the map (the wearer, the target, waypoints, the picked place, the route) has
 // the shapes the field map uses (core/markers.js), so the two maps read alike.
-// 보내는 이벤트: 없음
-// 형식: docs/INTERFACES.md 3장
+// Sends: nothing
+// Formats: docs/INTERFACES.md section 3
 //
-// ctx (init에서 받는 것):
-//   ctx.bus        이벤트 버스 (core/bus.js). 다른 모듈과는 이것으로만 대화한다
+// ctx (what init gets):
+//   ctx.bus        the event bus (core/bus.js). The only way to talk to other modules
 //   ctx.scene      THREE.Scene for presentation; its display scale is not a map distance.
-//   ctx.camera     THREE.PerspectiveCamera. AR에서는 헤드셋 위치를 따라간다
-//   ctx.renderer   THREE.WebGLRenderer (renderer.xr 로 손·컨트롤러에 접근)
-//   ctx.xr         XR 상태: session, presenting, refSpace, enabledFeatures,
+//   ctx.camera     THREE.PerspectiveCamera. In AR it follows the headset's position
+//   ctx.renderer   THREE.WebGLRenderer (hands and controllers through renderer.xr)
+//   ctx.xr         XR state: session, presenting, refSpace, enabledFeatures,
 //                  has("hand-tracking"), onSessionStart(fn), onSessionEnd(fn)
-//   ctx.mock       가짜로 도는 부분: { data, link, hazard, any, speed }
-//   ctx.assetUrl   레이어의 file 이름 → 불러올 주소 (목 모드의 가짜 이미지 포함)
-//   ctx.config     core/config.js 의 설정
+//   ctx.mock       the parts that run fake: { data, link, hazard, any, speed }
+//   ctx.assetUrl   a layer's file name → the URL to load it from (the fake images of mock mode too)
+//   ctx.config     the settings of core/config.js
 //
-// frame (update에서 받는 것):
-//   frame.time     시작 후 지난 시간 (ms)
-//   frame.dt       앞 프레임과의 간격 (초)
-//   frame.xrFrame  XRFrame. AR 세션 밖(PC 화면)에서는 null
-//   frame.refSpace local-floor 기준 공간. 세션 밖에서는 null
-//   frame.session  XRSession 또는 null
+// frame (what update gets):
+//   frame.time     time since the start (ms)
+//   frame.dt       time since the previous frame (s)
+//   frame.xrFrame  the XRFrame. null outside an AR session (PC view)
+//   frame.refSpace the local-floor reference space. null outside a session
+//   frame.session  the XRSession or null
 //
-// 이미지 레이어는 ctx.assetUrl(layer.file) 로 주소를 얻는다 (목 모드에서도 같은 코드로 돈다).
-// 숫자 격자는 layers:ready 의 grids.topo, grids.slope (Float32Array, 인덱스 row * cols + col).
+// An image layer gets its URL from ctx.assetUrl(layer.file) (the same code runs in mock mode).
+// The numeric grids are grids.topo and grids.slope of layers:ready (Float32Array, index row * cols + col).
 
 import * as THREE from 'three';
 import { MAP, rampColor } from './config.js';
@@ -248,7 +248,7 @@ async function selectLayer(id, visible) {
     surface.material.map = texture; surface.material.needsUpdate = true; caption();
   } catch (err) {
     if (serial === request && epoch === generation) { surface.material.map = null; surface.material.needsUpdate = true; caption(`Layer unavailable: ${layer.labelEn ?? layer.label}`); }
-    console.warn('[map] 레이어 로드 실패:', id, err.message);
+    console.warn('[map] could not load the layer:', id, err.message);
   }
 }
 function clearData() {
@@ -288,7 +288,7 @@ function load(payload) {
     if (base) setCurrent(cellToWorld(transform, base.cell));
     syncMarked();
     label = makeLabel(); caption();
-  } catch (err) { console.warn('[map] 지형을 표시할 수 없습니다:', err.message); }
+  } catch (err) { console.warn('[map] cannot show the terrain:', err.message); }
 }
 // ---- picking a place on the map (hud/index.js points a hand's ray at it) ----
 const rayFrom = new THREE.Vector3(), rayStep = new THREE.Vector3(), probe = new THREE.Vector3(), toLocal = new THREE.Matrix4();

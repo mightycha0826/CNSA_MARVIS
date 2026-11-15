@@ -282,7 +282,7 @@ export function planPath(grid, start, goal, opts = {}) {
   const g = nearestFree(grid, blocked, g0[0], g0[1], snap);
   if (!s || !g) return { points: [], distanceM: 0, blocked: true };
 
-  const { cols, rows, cells } = grid;
+  const { cols, rows } = grid;
   const N = cols * rows;
   const cost = new Float32Array(N).fill(Infinity);
   const from = new Int32Array(N).fill(-1);

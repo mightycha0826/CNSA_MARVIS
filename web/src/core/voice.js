@@ -22,12 +22,13 @@
 //   ?voice=0     turn the voice link off
 //   ?mockMic=a.wav,b.wav   use these audio files as the microphone (testing without a mic)
 
+import { params, isOff } from './params.js';
+
 const MIC_RATE = 16000;
 const CHUNK_MS = 100;
 
-const q = new URLSearchParams(location.search);
-const ENABLED = q.get('voice') !== '0';
-const MOCK_MIC = q.get('mockMic'); // comma-separated audio file URLs to use as the microphone
+const ENABLED = !isOff('voice');
+const MOCK_MIC = params.get('mockMic'); // comma-separated audio file URLs to use as the microphone
 
 let io = null; // { sendJson, sendBinary }
 let ctx = null;

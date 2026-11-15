@@ -1,48 +1,59 @@
-// hud — 상태창, 비상 모드, 레이어 전환 UI (F, 길윤석)
+// hud — status tiles, emergency mode, layer switching UI (F)
 //
-// 받는 이벤트: layers:ready, layer:toggle, env:update, telemetry:update, alert:raise, alert:clear,
-//              nav:route, voice:command (intent가 alert.ack일 때), voice:commands, app:mode
-// 테두리: critical 경보는 빨강, warn 경보는 같은 테두리를 주황으로 점멸한다.
+// Receives: layers:ready, layer:toggle, env:update, telemetry:update, alert:raise, alert:clear,
+//           nav:route, voice:command (alert.ack, and the words of the marks' buttons), voice:commands, app:mode
+// The frame: a critical alert flashes red, a warn alert flashes the same frame in orange.
 // The same pulse also lights the whole view softly in that colour (HUD.wash).
-// 보내는 이벤트: layer:toggle (탭을 누를 때, 그리고 layers:ready 직후 기본 레이어 한 번),
-//                mode:change (critical 경보가 생기면 emergency, 모두 풀리면 원래 모드)
-// 형식: docs/INTERFACES.md 3장. 디자인: mockups/hud-mockup.html, design-system/point
+// Sends:    layer:toggle (when a tab is pressed, and once for the default layer right after layers:ready),
+//           mode:change (emergency when a critical alert comes up; the mode before it when all are cleared)
+// Formats: docs/INTERFACES.md section 3. Design: mockups/hud-mockup.html, design-system/point
 //
-// 파일:
-//   config.js   크기·위치·주기 숫자 (조정은 여기서)
-//   strings.js  화면 글자 (en / ko)
-//   tokens.js   색·글꼴 (포인트 디자인 시스템 다크 테마)
-//   draw.js     캔버스에 그리는 함수
-//   pointer.js  point and pinch: the ray from the hand, its cursor, the press
-//   index.js    이벤트를 받아 상태를 바꾸고, 패널을 장면에 놓는다
+// Files:
+//   config.js      sizes, positions, periods (tune here)
+//   strings.js     on-screen text (en / ko)
+//   tokens.js      colours and fonts (the Point design system's dark theme)
+//   draw.js        the functions that draw on a canvas
+//   panel.js       a canvas on a mesh, and where it sits in front of the eyes
+//   sound.js       alarm beep, click, arrival chime
+//   pointer.js     point and pinch: the ray from the hand, its cursor, the press
+//   marks.js       the picked place, the waypoints and their names, the card over a pick
+//   status.js      the readings: their history, and which tiles are shown
+//   dash.js        the tiles that move (layout.js: where to; importance.js: which matter most)
+//   suit.js        the vitals hologram over the right palm (suit-limits.js: what is out of range)
+//   rescue.js      the emergency (SOS) button
+//   index.js       takes the events, keeps the state, places the panels, runs the frame
 //
-// AR 세션 안에서는 HTML이 보이지 않아서, 캔버스에 그린 그림을 눈앞 1m 평면에 붙인다.
-// 레이어는 한 번에 하나만 켠다 (목업의 결정). 탭을 누르면 앞 레이어를 끄고 새 레이어를 켠다.
+// HTML is not visible inside an AR session, so pictures drawn on canvases are put on a plane 1 m
+// in front of the eyes. Only one layer is on at a time (decided in the mockup): pressing a tab
+// turns the layer before it off and the new one on.
 //
-// 헤드셋에서 미확인: 글자 크기와 가독성, 반투명 카드, 손바닥 방향 판정, 포인터로 탭 누르기 (pointer.js).
+// Not checked on the headset: text size and legibility, translucent cards, the palm direction
+// test, pressing tabs with the pointer (pointer.js).
 
 import * as THREE from 'three';
 import { HUD } from './config.js';
 import { STRINGS } from './strings.js';
 import { T, loadFont } from './tokens.js';
 import { drawBanner, drawAlert, drawAlertGlow, drawLayers, drawCommands, drawSosBig } from './draw.js';
-import { leftPalm, makePalmState } from '../core/palm.js';
-import { mode } from '../core/mode.js';
+import { UNIT, makePanel, makeWash, placeOnStage, hitAt } from './panel.js';
+import { alarmBeep, clickSound, successSound } from './sound.js';
 import { createPointer, tipDown } from './pointer.js';
 import { createSuit } from './suit.js';
 import { createRescue } from './rescue.js';
-import { handOpen } from '../core/palm.js';
-import { popIn } from '../core/hologram.js';
-import { walkableNear, reachableFrom } from '../core/waypoints.js';
-import { choose, importance, trend, whileVitalsOpen } from './importance.js';
+import { createMarks } from './marks.js';
+import { createStatus } from './status.js';
 import { createDash } from './dash.js';
-import { sizeOf } from './layout.js';
-import { pickOnMap, mapCellInRoom, showPick, cellOfMapPoint, mapTargetCell, mapZoom } from '../map/index.js';
-import { MAP } from '../map/config.js';
-import { FIELD, pickOnFieldMap, fieldPlaceOnMap, showFieldPick, fieldHere, fieldTarget, fieldSpan } from '../field/index.js';
+import { leftPalm, makePalmState, handOpen } from '../core/palm.js';
+import { mode } from '../core/mode.js';
+import { popIn } from '../core/hologram.js';
+import { pickOnMap } from '../map/index.js';
+import { pickOnFieldMap } from '../field/index.js';
 
 const S = STRINGS[HUD.lang];
-const UNIT = HUD.distanceM * Math.tan(Math.PI / 180); // 1도의 길이 (m)
+const SOS_ID = '__sos';
+const NAMING_PREFIX = '__name:'; // the naming buttons on the command card ("Confirm" is also a command's name)
+const VITALS_TILES = new Set(['o2', 'ambient', 'heart', 'body', 'pressure']); // the readings the vitals hologram shows itself
+const UP = new THREE.Vector3(0, 1, 0);
 
 let ctx;
 const state = {
@@ -58,19 +69,17 @@ const state = {
   baseMode: 'normal',
   mode: 'normal',
 };
-const dirty = { status: true, banner: true, layers: true, commands: true, pick: true };
+const dirty = { status: true, banner: true, layers: true, commands: true };
 
-// ---- 패널 ----
-let rigid; // 카메라에 붙는 묶음 (비상 테두리, 그리고 followRate가 0이면 카드도)
-let cards; // 상태창·경보 카드 묶음
+// ---- panels ----
+let rigid; // the group fixed to the camera (the alert light, and the cards too when followRate is 0)
+let cards; // the group of the status tiles and the alert card
 let pBanner, pAlert, pLayers, pEdge, pCommands;
 let dash = null; // the readings as moving tiles (dash.js)
 let wash; // the soft light over the whole view while an alert rings
 let layerHits = [];
 let layersOnPalm = false;
 const palmState = makePalmState();
-/** True while the terrain map is in view: palm up in the headset, always on a PC screen. */
-let mapInView = false;
 // Pointer feedback on the layer menu: which tab the cursor is on and which was just pressed.
 const touch = { hoverId: null, pressedId: null, pressedUntil: 0 };
 // The same for the command menu over the back of the hand.
@@ -93,11 +102,24 @@ const menuCommands = () => commands.filter((c) => !c.mode || c.mode === mode.cur
 let pointer;
 let pointerTargets = [];
 // Which menus a pointer was on in the last frame: a menu that is being pointed at holds still.
-const engaged = { layers: false, commands: false, pick: false };
+const engaged = { layers: false, commands: false };
 let rescue = null; // the emergency button on the command card (rescue.js)
 let leftOpen = false; // the left hand is held open: only then does it bring a menu up
 let sosFistSince = null; // since when the left hand has been a fist over the command card
 let sosBig = false; // the command card shows the SOS button alone, large (a fist is held over it)
+let marks = null; // the picked place, the waypoints, the card over a pick (marks.js)
+let status = null; // the readings on the tiles (status.js)
+const tipped = new THREE.Vector3(); // the pointer's ray as it is used on the map (pointer.js: tipDown)
+let lastSosDraw = 0;
+let mapPointed = false; // the right hand's pointer is on the map this frame
+let suit = null; // the right hand: the vitals hologram over the palm (suit.js)
+let vitalsOpen = false; // it is up: its readings are not on the status tiles
+let vitalsFlipAt = -Infinity; // when it last opened or closed
+let vitalsAt = null; // where it is on the HUD's stage, [x, y] in degrees (as the tiles are placed)
+// Test hook: keep the command menu up without a hand (PC).
+let commandsPinned = false;
+// The running alarm: which level it is for, when it started, and how many beeps have sounded.
+const alarm = { level: null, t0: 0, beeps: 0 };
 
 /** The command card as the SOS button alone (a fist over it), or as the commands again (the hand opened). */
 function setSosBig(on) {
@@ -112,43 +134,6 @@ function setSosBig(on) {
   if (steady.commands.pop) steady.commands.pop.was = false;
   dirty.commands = true;
 }
-// A place picked on the palm map with the pointer: a pin on the map and a small card over it.
-// What the card offers depends on what was picked (pick.kind):
-//   'place'     bare ground                 Navigate (it becomes the target) · Waypoint · Cancel
-//   'waypoint'  a waypoint (pick.id)        Navigate · Record (say a new name) · Delete · Cancel
-//   'target'    the target                  Navigate · Delete · Cancel
-// and while a waypoint that was just set waits for its name (`naming`): Record · Confirm.
-// Every button can be spoken: "Navigate", "Waypoint", "Record", "Confirm", "Delete", "Cancel".
-let pick = null; // while the card is up: { cell: [col, row], note, kind, id } on the Mars map, { room: [x, z], kind, id } on the field map
-// The places the wearer marked: id -> { id, label, room: [x, z] } (field map) or { id, label, cell } (Mars map).
-// They are kept on the Jetson (waypoints:store) and come back in the next session
-// (waypoints:stored). A waypoint of the Mars map is a cell of the data and fits at once. One
-// of the field map is a place in room coordinates, and those are only the same as before when
-// the scan has found itself in the stored map (map:run, trusted): until then it waits in
-// `shelved`, unseen. `runs`: the scan runs whose coordinates it is known to fit.
-const waypoints = new Map();
-let waypointCount = 0;
-let shelved = []; // field waypoints that are not shown: [{ id, label, room, runs }]
-const scan = { run: null, trusted: false, storedRun: null }; // the scan's run and whether it trusts the stored map (scan/index.js)
-// A waypoint that was just set and may be given a name: { id, until, listening, listenUntil, token }.
-// Its two buttons are on the card over the map and, since "Mark waypoint" is pressed on the
-// command card (where the map is not in view), on the command card too.
-let naming = null;
-let dictations = 0;
-let lastMapPoint = null; // where the wearer is on the Mars map, in map metres (nav:position)
-let pPick = null;
-const pickPop = {}; // the pop the pick card comes up with (core/hologram.js)
-let pickHits = [];
-const pickTouch = { hoverId: null, pressedId: null, pressedUntil: 0 };
-const UP = new THREE.Vector3(0, 1, 0);
-const tipped = new THREE.Vector3(); // the pointer's ray as it is used on the map (pointer.js: tipDown)
-let lastSosDraw = 0;
-let mapPointed = false; // the right hand's pointer is on the map this frame
-let suit = null; // the right hand: the vitals hologram over the palm (suit.js)
-let vitalsOpen = false; // it is up: its readings are not on the status tiles
-let vitalsFlipAt = -Infinity; // when it last opened or closed
-let vitalsAt = null; // where it is on the HUD's stage, [x, y] in degrees (as the tiles are placed)
-const VITALS_TILES = new Set(['o2', 'ambient', 'heart', 'body', 'pressure']);
 
 /** A place in the room as a place on the HUD's stage, [x, y] in degrees as the tiles use them, or null when it is not in front of the wearer. */
 function onStage(world) {
@@ -158,124 +143,11 @@ function onStage(world) {
   const half = HUD.stage.wDeg / 2;
   return [Math.max(-half, Math.min(half, (p.x * k) / UNIT)), Math.max(0, Math.min(HUD.stage.hDeg, HUD.stage.hDeg / 2 - (p.y * k) / UNIT))];
 }
-// Test hook: keep the command menu up without a hand (PC).
-let commandsPinned = false;
-let audio = null;
-
-function audioCtx() {
-  audio ??= new (window.AudioContext || window.webkitAudioContext)();
-  if (audio.state !== 'running') audio.resume();
-  return audio;
-}
-
-// Alarm beep of the mockup: it sounds 0.1 s before each flash of the alert frame.
-//   warn      one soft 880 Hz sine tone
-//   critical  two sharp 2350 Hz square pulses through a low-pass filter (a piezo buzzer)
-function alarmBeep(level) {
-  if (!HUD.alarm.enabled) return;
-  try {
-    const ac = audioCtx();
-    const t = ac.currentTime + 0.004;
-    const G = HUD.alarm.gain;
-    if (level === 'critical') {
-      for (const [at, dur] of [[0, 0.105], [0.165, 0.135]]) {
-        const osc = ac.createOscillator();
-        const filter = ac.createBiquadFilter();
-        const gain = ac.createGain();
-        osc.type = 'square';
-        osc.frequency.setValueAtTime(HUD.alarm.criticalHz, t + at);
-        filter.type = 'lowpass';
-        filter.frequency.setValueAtTime(3400, t + at);
-        gain.gain.setValueAtTime(0.0001, t + at);
-        gain.gain.exponentialRampToValueAtTime(G * 1.1, t + at + 0.008);
-        gain.gain.setValueAtTime(G * 1.1, t + at + dur - 0.012);
-        gain.gain.exponentialRampToValueAtTime(0.0001, t + at + dur);
-        osc.connect(filter).connect(gain).connect(ac.destination);
-        osc.start(t + at);
-        osc.stop(t + at + dur + 0.015);
-      }
-    } else {
-      const osc = ac.createOscillator();
-      const gain = ac.createGain();
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(HUD.alarm.warnHz, t);
-      gain.gain.setValueAtTime(0.0001, t);
-      gain.gain.exponentialRampToValueAtTime(G, t + 0.012);
-      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.14);
-      osc.connect(gain).connect(ac.destination);
-      osc.start(t);
-      osc.stop(t + 0.16);
-    }
-  } catch {
-    /* no audio: the frame still flashes */
-  }
-}
-// The running alarm: which level it is for, when it started, and how many beeps have sounded.
-const alarm = { level: null, t0: 0, beeps: 0 };
-
-/** Short click, so a press is heard as well as seen. */
-function clickSound() {
-  try {
-    audioCtx();
-    const t = audio.currentTime;
-    const osc = audio.createOscillator();
-    const gain = audio.createGain();
-    osc.type = 'sine';
-    // A soft, low "tock": a calm tone that drops a little and fades quickly.
-    osc.frequency.setValueAtTime(330, t);
-    osc.frequency.exponentialRampToValueAtTime(220, t + 0.09);
-    gain.gain.setValueAtTime(0.0001, t);
-    gain.gain.exponentialRampToValueAtTime(0.22, t + 0.008);
-    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.16);
-    osc.connect(gain).connect(audio.destination);
-    osc.start(t);
-    osc.stop(t + 0.18);
-  } catch {
-    /* no audio: the visual feedback is enough */
-  }
-}
-
-/** Arrived: four rising notes and a held last one, the sound of a mission accomplished. */
-function successSound() {
-  if (!HUD.alarm.enabled) return; // ?sound=0 silences this with the alarms
-  try {
-    audioCtx();
-    const t0 = audio.currentTime + 0.02;
-    // C5, E5, G5, C6: a major chord climbing an octave; the last note rings out.
-    [523.25, 659.25, 783.99, 1046.5].forEach((hz, k) => {
-      const t = t0 + k * 0.11;
-      const last = k === 3;
-      const gain = audio.createGain();
-      gain.gain.setValueAtTime(0.0001, t);
-      gain.gain.exponentialRampToValueAtTime(HUD.alarm.gain * (last ? 1 : 0.8), t + 0.015);
-      gain.gain.exponentialRampToValueAtTime(0.0008, t + (last ? 0.75 : 0.22));
-      gain.connect(audio.destination);
-      // A soft tone with a quieter octave above it, so it sounds like a chime and not a beep.
-      for (const [mult, share] of [[1, 1], [2, 0.28]]) {
-        const osc = audio.createOscillator();
-        const part = audio.createGain();
-        osc.type = 'triangle';
-        osc.frequency.setValueAtTime(hz * mult, t);
-        part.gain.value = share;
-        osc.connect(part).connect(gain);
-        osc.start(t);
-        osc.stop(t + (last ? 0.8 : 0.26));
-      }
-    });
-  } catch {
-    /* no audio: the toast and the spoken message say it */
-  }
-}
-
-function hitAt(hits, x, y) {
-  return hits.find((h) => x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h) ?? null;
-}
-const tabAt = (x, y) => hitAt(layerHits, x, y);
 
 function commandsVM() {
   const pressedId = performance.now() < cmdTouch.pressedUntil ? cmdTouch.pressedId : null;
   // A waypoint was just marked from this card: until it is named or confirmed the card asks for that.
-  const ask = naming ? namingVM() : null;
+  const ask = marks.asking();
   return {
     cols: ask ? ask.items.length : HUD.commands.cols,
     title: ask?.title ?? S.voiceTitle ?? 'Commands',
@@ -286,337 +158,13 @@ function commandsVM() {
     sos: { id: SOS_ID, ...rescue.vm(performance.now()), hover: cmdTouch.hoverId === SOS_ID, pressed: pressedId === SOS_ID },
   };
 }
-const SOS_ID = '__sos';
+
 /** The button alone, large: what it says while a fist holds it armed, and once the signal is out. */
 function sosBigVM() {
   const z = rescue.vm(performance.now());
   const pressedId = performance.now() < cmdTouch.pressedUntil ? cmdTouch.pressedId : null;
   const sub = z.state === 'sent' ? z.sub : z.state === 'armed' ? 'Say "Confirm", or point and pinch · open your hand to cancel' : 'Rescue signal';
   return { id: SOS_ID, state: z.state, label: z.state === 'sent' ? 'SOS SENT' : 'SEND SOS', sub, pulse: z.pulse, hover: cmdTouch.hoverId === SOS_ID, pressed: pressedId === SOS_ID };
-}
-const NAMING_PREFIX = '__name:'; // the naming buttons on the command card ("Confirm" is also a command's name)
-
-const onField = () => mode.current === 'field';
-
-/** The whole list to the hub: what is shown, and what waits for a session in which it fits. */
-function saveWaypoints() {
-  const items = [];
-  for (const w of waypoints.values()) {
-    if (w.cell) items.push({ id: w.id, label: w.label, cell: w.cell });
-    else items.push({ id: w.id, label: w.label, room: w.room, runs: runsOf(w) });
-  }
-  ctx.bus.emit('waypoints:store', { items: [...items, ...shelved], count: waypointCount });
-}
-/** The runs a field waypoint fits: those it had, and the one it is shown in now. */
-const runsOf = (w) => [...new Set([...(w.runs ?? []), scan.run].filter(Boolean))].slice(-8);
-
-/** The room's coordinates changed (a new session, a recentre): the field waypoints are put aside, not deleted. */
-function shelveRoomWaypoints() {
-  for (const w of [...waypoints.values()]) {
-    if (!w.room) continue;
-    shelved = shelved.filter((d) => d.id !== w.id).concat({ id: w.id, label: w.label, room: w.room, runs: runsOf(w) });
-    waypoints.delete(w.id);
-    ctx.bus.emit('waypoint:remove', { id: w.id });
-  }
-}
-
-/** Show the shelved field waypoints that fit the coordinates in use: those of run `fits`. */
-function unshelve(fits) {
-  if (!fits) return;
-  const back = shelved.filter((d) => d.runs?.includes(fits));
-  if (!back.length) return;
-  shelved = shelved.filter((d) => !back.includes(d));
-  for (const d of back) {
-    const w = { id: d.id, label: d.label, room: d.room, runs: d.runs };
-    waypoints.set(w.id, w);
-    ctx.bus.emit('waypoint:set', w);
-  }
-  saveWaypoints(); // they now fit this run too
-  showToast(`${back.length} waypoint${back.length > 1 ? 's' : ''} from last time`);
-}
-
-/** The scan says which run it is in, and whether the stored map (and so the stored waypoints) fits it. */
-function onScanRun({ run, trusted, storedRun }) {
-  if (run !== scan.run) {
-    shelveRoomWaypoints(); // new coordinates; tagged with the run they were in
-    scan.run = run;
-  }
-  scan.trusted = !!trusted;
-  scan.storedRun = storedRun ?? null;
-  if (scan.trusted) unshelve(scan.storedRun);
-}
-
-/** The hub's list from earlier sessions. */
-function onStoredWaypoints({ items, count }) {
-  if (!Array.isArray(items)) return;
-  waypointCount = Math.max(waypointCount, Number.isInteger(count) ? count : 0);
-  let added = 0;
-  for (const it of items) {
-    if (!it?.id || waypoints.has(it.id)) continue;
-    if (Array.isArray(it.cell)) {
-      const w = { id: it.id, label: it.label ?? '', cell: it.cell };
-      waypoints.set(w.id, w);
-      ctx.bus.emit('waypoint:set', w);
-      added++;
-    } else if (Array.isArray(it.room)) {
-      shelved = shelved.filter((d) => d.id !== it.id).concat({ id: it.id, label: it.label ?? '', room: it.room, runs: Array.isArray(it.runs) ? it.runs : [] });
-    }
-  }
-  if (added && !onField()) showToast(`${added} waypoint${added > 1 ? 's' : ''} from last time`);
-  // The link came back within this run, or the scan already trusts the stored map.
-  unshelve(scan.run);
-  if (scan.trusted) unshelve(scan.storedRun);
-  // What was marked or renamed while the link was down is not on the hub yet: now that its
-  // list is merged in, send ours.
-  const kept = new Map(items.map((it) => [it?.id, it?.label ?? '']));
-  if ([...waypoints.values(), ...shelved].some((w) => kept.get(w.id) !== w.label)) saveWaypoints();
-}
-const wpOf = (id) => waypoints.get(id) ?? null;
-const here = (w) => (onField() ? w.room : w.cell); // a waypoint of the other map has no place on this one
-
-/** The waypoint or target at (or right beside) a picked place, as { kind, id?, room | cell }, or null. */
-function markNear(place) {
-  let best = null;
-  const take = (kind, id, at, d) => {
-    if (d <= 1 && (!best || d < best.d)) best = { kind, id, d, ...(onField() ? { room: at } : { cell: at }) };
-  };
-  if (place.room) {
-    const reach = (HUD.pick.snapM * fieldSpan()) / FIELD.mapM; // the snap distance on the map, in room metres
-    const far = (at) => Math.hypot(at[0] - place.room[0], at[1] - place.room[1]) / reach;
-    const t = fieldTarget();
-    if (t) take('target', null, t, far(t) * 0.8); // the target is the larger marker: it wins a tie
-    for (const w of waypoints.values()) if (w.room) take('waypoint', w.id, w.room, far(w.room));
-  } else if (state.layerSet) {
-    const reach = (HUD.pick.snapM / (MAP.widthM * mapZoom())) * state.layerSet.grid.cols; // in cells, on the map as large as it shows now
-    const far = (at) => Math.hypot(at[0] - place.cell[0], at[1] - place.cell[1]) / reach;
-    const t = mapTargetCell();
-    if (t) take('target', null, t, far(t) * 0.8);
-    for (const w of waypoints.values()) if (w.cell) take('waypoint', w.id, w.cell, far(w.cell));
-  }
-  // The target stands on a waypoint (it was navigated to): the waypoint is what is picked, so
-  // it can still be renamed or deleted; "Stop" ends the way to it.
-  if (best?.kind === 'target') {
-    const at = best.room ?? best.cell;
-    const tol = best.room ? 0.05 : 0.5;
-    const same = [...waypoints.values()].find((w) => here(w) && Math.hypot(here(w)[0] - at[0], here(w)[1] - at[1]) <= tol);
-    if (same) best = { ...best, kind: 'waypoint', id: same.id };
-  }
-  return best;
-}
-
-const NAMING_ITEMS = ['Record', 'Confirm'];
-
-/** What the two cards say while a waypoint waits for its name. */
-function namingVM() {
-  const w = wpOf(naming.id);
-  return naming.listening
-    ? { title: 'Listening…', hint: 'Say the name, then pause', items: ['Cancel'] }
-    : { title: w?.label ?? 'Waypoint', hint: 'Name it by voice?', items: NAMING_ITEMS };
-}
-
-function pickVM() {
-  const pressedId = performance.now() < pickTouch.pressedUntil ? pickTouch.pressedId : null;
-  const ls = state.layerSet;
-  let hint = '';
-  if (pick?.room) {
-    const eye = fieldHere() ?? [ctx.camera.getWorldPosition(v1).x, v1.z];
-    hint = `${Math.hypot(pick.room[0] - eye[0], pick.room[1] - eye[1]).toFixed(1)} m from you`;
-  } else if (pick && ls) {
-    const at = Math.round(pick.cell[1]) * ls.grid.cols + Math.round(pick.cell[0]);
-    const h = state.grids.topo?.[at];
-    const slope = state.grids.slope?.[at];
-    hint = [pick.note || (Number.isFinite(h) ? `${h.toFixed(0)} m` : null), Number.isFinite(slope) ? `slope ${slope.toFixed(0)}°` : null].filter(Boolean).join(' · ');
-  }
-  let vm;
-  if (naming && pick?.id === naming.id) vm = namingVM();
-  else if (pick?.kind === 'waypoint') vm = { title: wpOf(pick.id)?.label ?? 'Waypoint', hint, items: ['Navigate', 'Record', 'Delete', 'Cancel'] };
-  else if (pick?.kind === 'target') vm = { title: 'Target', hint, items: ['Navigate', 'Delete', 'Cancel'] };
-  else vm = { title: 'Selected point', hint, items: ['Navigate', 'Waypoint', 'Cancel'] };
-  return {
-    cols: vm.items.length > 3 ? 2 : vm.items.length, // four buttons: two rows of two, so "Navigate" is not cut short
-    title: vm.title,
-    hint: vm.hint,
-    items: vm.items.map((label) => ({ id: label, label, hover: label === pickTouch.hoverId, pressed: label === pressedId })),
-  };
-}
-
-function setPick(next) {
-  pick = next;
-  if (pick.cell) showPick(pick.cell);
-  dirty.pick = true;
-  ctx.bus.emit('map:pick', pick.room ? { room: pick.room } : { cell: pick.cell });
-}
-
-function selectPoint(cell) {
-  if (naming) endNaming(); // picking elsewhere settles the waypoint that was waiting for its name
-  clickSound();
-  const mark = markNear({ cell });
-  if (mark) return setPick({ cell: mark.cell, note: '', kind: mark.kind, id: mark.id });
-  // The planner closes ground steeper than 20 degrees, and much of this terrain is: the pick
-  // goes to the nearest walkable cell, and the card says how far that was.
-  const asked = [Math.round(cell[0]), Math.round(cell[1])];
-  const ls = state.layerSet;
-  // Reachable from the base over walkable slopes, worked out once per data set.
-  if (ls && state.reachable?.for !== ls) {
-    const base = ls.waypoints?.find((w) => w.id === 'base');
-    state.reachable = { for: ls, cells: base ? reachableFrom(ls, state.grids.slope ?? null, base.cell) : null };
-  }
-  const walkable = ls ? walkableNear(ls, state.grids.slope ?? null, asked, { within: state.reachable?.cells ?? null, reachCells: 40 }) : asked;
-  const to = walkable ?? asked;
-  const movedM = ls ? Math.round(Math.hypot(to[0] - asked[0], to[1] - asked[1]) * ls.grid.cellSizeM) : 0;
-  setPick({ cell: to, note: !walkable ? 'no walkable ground near' : movedM ? `moved ${movedM} m to reachable ground` : '', kind: 'place' });
-}
-
-/** A place picked on the field map: `room` is where it is in the room. */
-function selectPlace(room) {
-  if (naming) endNaming();
-  clickSound();
-  const mark = markNear({ room });
-  setPick(mark ? { room: mark.room, kind: mark.kind, id: mark.id } : { room: [room[0], room[1]], kind: 'place' });
-}
-
-function clearPick(keepPin = false) {
-  if (!pick) return;
-  const wasField = !!pick.room;
-  pick = null;
-  if (wasField) showFieldPick(null);
-  else if (!keepPin) showPick(null);
-  pPick.mesh.visible = false;
-  ctx.bus.emit('map:pick', null);
-}
-
-/** Go to the picked place: it becomes the target, and the route is requested. */
-function navigatePick() {
-  if (!pick) return;
-  const w = pick.kind === 'waypoint' ? wpOf(pick.id) : null;
-  if (naming) endNaming(false);
-  if (pick.room) {
-    ctx.bus.emit('field:target', { point: pick.room, label: w?.label ?? '' });
-    clearPick();
-    return;
-  }
-  const id = w ? w.id : 'pick';
-  ctx.bus.emit('nav:waypoint', { id, cell: pick.cell, label: w?.label ?? 'Selected point' });
-  ctx.bus.emit('nav:request', { targetId: id });
-  clearPick(!w); // the card goes; the pin stays where the route leads (a waypoint has its own marker)
-}
-
-// ---- waypoints ----
-/** Mark a place: { room } on the field map, { cell } on the Mars map. The waypoint then waits for its name. */
-function addWaypoint(place) {
-  const n = ++waypointCount;
-  // The id must not meet one from an earlier session (the stored list may arrive later).
-  const w = { id: `wp-${Date.now().toString(36)}-${n}`, label: `Waypoint ${n}`, ...(place.room ? { room: [place.room[0], place.room[1]] } : { cell: [place.cell[0], place.cell[1]] }) };
-  waypoints.set(w.id, w);
-  ctx.bus.emit('waypoint:set', w);
-  saveWaypoints();
-  naming = { id: w.id, until: performance.now() + HUD.pick.namingMs, listening: false, listenUntil: 0, token: 0 };
-  setPick({ ...(w.room ? { room: w.room } : { cell: w.cell, note: '' }), kind: 'waypoint', id: w.id });
-  dirty.commands = true;
-  showToast(`${w.label} set`);
-  return w;
-}
-
-/** "Mark waypoint": the place where the wearer stands. */
-function markHere() {
-  // On the Mars map without tracking (the PC view) the wearer is where the map starts them: at the base.
-  const place = onField() ? { room: fieldHere() } : { cell: cellOfMapPoint(lastMapPoint) ?? state.layerSet?.waypoints?.find((w) => w.id === 'base')?.cell };
-  if (!(place.room ?? place.cell)) {
-    showToast('Position not tracked yet');
-    return;
-  }
-  if (naming) endNaming(false);
-  addWaypoint(place);
-}
-
-/** The naming is over (named, confirmed, timed out, or something else was picked). */
-function endNaming(closeCard = true) {
-  if (!naming) return;
-  if (naming.listening) ctx.bus.emit('voice:dictate', { on: false, id: naming.token });
-  const id = naming.id;
-  naming = null;
-  dirty.commands = dirty.pick = true;
-  if (closeCard && pick?.id === id) clearPick();
-}
-
-/** "Record": what is said next, until the speaker pauses, becomes the waypoint's name. */
-function startRecording(id) {
-  if (!wpOf(id)) return;
-  if (naming?.id !== id) naming = { id, until: 0, listening: false, listenUntil: 0, token: 0 };
-  const now = performance.now();
-  naming.listening = true;
-  naming.listenUntil = now + HUD.pick.listenMs;
-  naming.until = naming.listenUntil;
-  naming.token = ++dictations;
-  ctx.bus.emit('voice:dictate', { on: true, id: naming.token, seconds: HUD.pick.listenMs / 1000 });
-  dirty.commands = dirty.pick = true;
-  showToast('Listening: say the name');
-}
-
-function stopRecording(note) {
-  if (!naming?.listening) return;
-  ctx.bus.emit('voice:dictate', { on: false, id: naming.token });
-  naming.listening = false;
-  naming.until = performance.now() + HUD.pick.namingMs;
-  dirty.commands = dirty.pick = true;
-  if (note) showToast(note);
-}
-
-/** What the hub heard after "Record". */
-function onDictation({ id, text, unavailable }) {
-  if (!naming?.listening || id !== naming.token) return;
-  if (unavailable) return stopRecording('Recording needs the Jetson: not connected');
-  // As a name: one line, no full stop at the end, not longer than a label can show.
-  const label = String(text ?? '').replace(/\s+/g, ' ').trim().replace(/[.!?。]+$/, '').slice(0, 40).trim();
-  if (!label) return stopRecording('Nothing heard');
-  const w = wpOf(naming.id);
-  naming.listening = false;
-  if (w) {
-    w.label = label;
-    ctx.bus.emit('waypoint:set', w);
-    saveWaypoints();
-    showToast(`Waypoint: “${label}”`);
-  }
-  endNaming();
-}
-
-/** Delete what is picked: a waypoint, or the target. */
-function deletePicked() {
-  if (!pick) return;
-  if (pick.kind === 'waypoint') {
-    const w = wpOf(pick.id);
-    if (naming?.id === pick.id) endNaming(false);
-    waypoints.delete(pick.id);
-    ctx.bus.emit('waypoint:remove', { id: pick.id });
-    saveWaypoints();
-    showToast(`${w?.label ?? 'Waypoint'} deleted`);
-  } else if (pick.kind === 'target') {
-    if (pick.room) ctx.bus.emit('field:target', { point: null });
-    else ctx.bus.emit('voice:command', { intent: 'nav.stop', slots: {}, text: '' }); // the Mars route ends, and its target with it
-    showToast('Target deleted');
-  } else return;
-  clearPick();
-}
-
-/** A button of the pick card, or of the naming buttons on the command card. */
-function pressMark(id) {
-  if (id === 'Navigate') navigatePick();
-  else if (id === 'Waypoint') pick?.kind === 'place' && addWaypoint(pick);
-  else if (id === 'Record') startRecording(naming?.id ?? pick?.id);
-  else if (id === 'Confirm') endNaming();
-  else if (id === 'Delete') deletePicked();
-  else if (naming?.listening) stopRecording(); // "Cancel" while listening: back to Record / Confirm
-  else {
-    if (naming) endNaming(false);
-    clearPick();
-  }
-}
-
-function pressPick(id) {
-  pickTouch.pressedId = id;
-  pickTouch.pressedUntil = performance.now() + HUD.layers.pressFlashMs;
-  clickSound();
-  pressMark(id);
 }
 
 /** Run a command from the menu exactly as if it had been spoken. `id` is what the button says. */
@@ -625,193 +173,23 @@ function runCommand(id) {
   if (c) ctx.bus.emit('voice:text', { text: c.say, intent: c.intent, slots: c.slots ?? {} });
 }
 
-function makePanel(wDeg, hDeg, pxW = Math.round(wDeg * HUD.pxPerDeg), pxH = Math.round(hDeg * HUD.pxPerDeg)) {
-  const canvas = document.createElement('canvas');
-  canvas.width = pxW;
-  canvas.height = pxH;
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.generateMipmaps = false;
-  tex.minFilter = THREE.LinearFilter;
-  const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthTest: false, depthWrite: false, toneMapped: false });
-  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(wDeg * UNIT, hDeg * UNIT), mat);
-  mesh.renderOrder = 1000;
-  return { canvas, g: canvas.getContext('2d'), tex, mat, mesh, wM: wDeg * UNIT, hM: hDeg * UNIT };
-}
-
-/**
- * The alert light over the whole view: a sheet of colour fixed in front of the eyes, larger than
- * the field of view. It is a little weaker in the middle than toward the edges, so what the
- * wearer is looking at stays clear. Drawn under the HUD cards, over everything else.
- */
-function makeWash() {
-  const N = 128;
-  const canvas = document.createElement('canvas');
-  canvas.width = canvas.height = N;
-  const g = canvas.getContext('2d');
-  // The sheet is 3 m wide half a metre away; the view ends about 0.7 m from its centre, which
-  // is where the gradient reaches full strength.
-  const grad = g.createRadialGradient(N / 2, N / 2, 0, N / 2, N / 2, (N / 2) * 0.47);
-  grad.addColorStop(0, `rgba(255, 255, 255, ${HUD.wash.centre})`);
-  grad.addColorStop(1, 'rgba(255, 255, 255, 1)');
-  g.fillStyle = grad;
-  g.fillRect(0, 0, N, N);
-  const mesh = new THREE.Mesh(
-    new THREE.PlaneGeometry(3, 3),
-    new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(canvas), transparent: true, opacity: 0, depthTest: false, depthWrite: false, toneMapped: false }),
-  );
-  mesh.name = 'hud-alert-wash';
-  mesh.position.z = -0.5;
-  mesh.renderOrder = 900; // after the map and the room, before the HUD cards (999 and up)
-  mesh.frustumCulled = false;
-  mesh.visible = false;
-  return mesh;
-}
-
-/** 목업 화면 좌표(왼쪽 위 기준, 도)의 사각형을 눈앞 평면 위에 놓는다. */
-function place(panel, leftDeg, topDeg, wDeg, hDeg) {
-  panel.mesh.position.set((leftDeg + wDeg / 2 - HUD.stage.wDeg / 2) * UNIT, (HUD.stage.hDeg / 2 - topDeg - hDeg / 2) * UNIT, -HUD.distanceM);
-  panel.mesh.quaternion.identity();
-  panel.mesh.scale.setScalar(1);
-}
-
 function placeLayersFixed() {
   const L = HUD.layers;
   cards.add(pLayers.mesh);
-  place(pLayers, L.fixedLeftDeg, HUD.stage.hDeg - L.fixedBottomDeg - 15.5, L.wDeg, L.hDeg);
+  placeOnStage(pLayers, L.fixedLeftDeg, HUD.stage.hDeg - L.fixedBottomDeg - 15.5, L.wDeg, L.hDeg);
   pLayers.mesh.quaternion.identity(); // it may come back turned from the palm
   layersOnPalm = false;
 }
 
-// ---- 이름 ----
+// ---- names ----
 const layerLabel = (id) => {
   const layer = state.layerSet?.layers.find((l) => l.id === id);
   return S.layers[id] ?? layer?.label ?? id ?? '—';
 };
 const waypointLabel = (id) => {
   const wp = state.layerSet?.waypoints?.find((w) => w.id === id);
-  return waypoints.get(id)?.label ?? S.waypoints[id] ?? wp?.label ?? id ?? '';
+  return marks.labelOf(id) ?? S.waypoints[id] ?? wp?.label ?? id ?? '';
 };
-
-// ---- 표시용 값 ----
-// What the readings were over the last minute, one value a second: the graphs on the status
-// card, and how fast each reading is moving (importance.js: trend).
-const history = { heart: [], body: [], radiation: [], pressure: [], airTemp: [], airPressure: [] };
-let lastSample = 0;
-let rankedShown = []; // ids of the ranked readings on the card, in the order of their places
-let routeFrom = 0; // the longest distance seen on the route in progress: where its bar starts
-
-function sampleReadings(now) {
-  if (now - lastSample < 1000) return;
-  lastSample = now;
-  const r = suit.readings();
-  const e = state.env;
-  const push = (key, value) => {
-    history[key].push(Number.isFinite(value) ? value : null);
-    if (history[key].length > HUD.readings.historyS) history[key].shift();
-  };
-  push('heart', r.heart);
-  push('body', r.torsoC);
-  push('pressure', r.pressureKpa);
-  push('radiation', e?.radiationUGyPerDay);
-  push('airTemp', e?.airTempK != null ? e.airTempK - 273.15 : null);
-  push('airPressure', e?.pressurePa);
-  dirty.status = true; // the graphs moved on
-}
-
-/**
- * The readings: the pinned ones (battery, oxygen, ambient temperature: what has to be watched
- * all the time), and under them the readings that matter
- * most right now, chosen by importance.js.
- */
-function statusVM() {
-  const R = HUD.readings;
-  const r = suit.readings();
-  const z = suit.states();
-  const e = state.env;
-  const linkLost = state.alerts.has('link-lost');
-  const fill = (v, lo, hi) => (v == null ? 0 : Math.max(0, Math.min(1, (v - lo) / (hi - lo))));
-  const num = (v, digits = 0) => (v == null ? '—' : v.toFixed(digits).replace('-', '−'));
-
-  // ---- pinned: a bar each, with the limits marked on it ----
-  const suitAlert = state.alerts.get('suit-temp');
-  const t = state.suit.temp;
-  const G = HUD.suitGauge;
-  const pinned = [
-    {
-      id: 'battery', pinned: true, label: 'Battery', value: num(r.battery), unit: '%',
-      tag: r.battery == null ? 'no reading' : r.charging ? 'charging' : null,
-      state: z.battery, fill: fill(r.battery, 0, 100),
-      marks: [{ at: HUD.suit.battery.crit / 100 }, { at: HUD.suit.battery.warn / 100 }], lowIsBad: true,
-    },
-    {
-      id: 'o2', pinned: true, inVitals: true, label: 'Oxygen', value: num(r.o2), unit: '%', tag: 'sim',
-      state: z.o2, fill: fill(r.o2, 0, 100),
-      marks: [{ at: HUD.suit.o2.crit / 100 }, { at: HUD.suit.o2.warn / 100 }], lowIsBad: true,
-    },
-    {
-      // The sensor on the suit: the air around the wearer. As soon as its alert sounds (warn or
-      // critical) the tile comes to the middle (layout.js: focus), where it cannot be missed.
-      id: 'ambient', pinned: true, inVitals: true, label: S.suit, value: num(t, 1), unit: '°C',
-      tag: linkLost ? S.lastValue : state.suit.source === 'mock' ? 'mock' : null,
-      state: linkLost || t === null ? 'stale' : suitAlert?.level === 'critical' ? 'crit' : suitAlert ? 'warn' : '',
-      focus: !!suitAlert,
-      fill: fill(t, G.min, G.max),
-      marks: [{ at: fill(G.warn, G.min, G.max), label: String(G.warn) }, { at: fill(G.crit, G.min, G.max), label: String(G.crit) }],
-    },
-  ];
-
-  // ---- the rest: a graph each; the card shows the most important ones ----
-  const nav = state.nav;
-  const routeOn = nav.status === 'ok' || nav.status === 'blocked';
-  if (nav.status === 'ok') routeFrom = Math.max(routeFrom, nav.distanceM);
-  else if (!routeOn) routeFrom = 0;
-  const radAlert = state.alerts.get('radiation');
-  const graph = (key, bad, span) => {
-    const h = history[key];
-    const seen = h.filter(Number.isFinite);
-    // Without a set range the graph covers what the reading has done, with a little room.
-    const lo = span ? span[0] : seen.length ? Math.min(...seen) : 0;
-    const hi = span ? span[1] : seen.length ? Math.max(...seen) : 1;
-    const room = span ? 0 : Math.max((hi - lo) * 0.25, Math.abs(hi) * 0.02, 1e-6);
-    return { history: h, min: lo - room, max: hi + room, trend: bad == null ? 0 : trend(h, bad, span ? span[1] - span[0] : Math.max(hi - lo, Math.abs(hi) * 0.2, 1e-6)) };
-  };
-  const others = [
-    {
-      id: 'route', base: R.route.base, active: routeOn, viz: 'progress',
-      label: nav.targetId ? S.distanceTo(waypointLabel(nav.targetId)) : S.distance,
-      value: nav.status === 'ok' ? num(nav.distanceM, 1) : '—', unit: nav.status === 'ok' ? 'm' : '',
-      word: nav.status === 'blocked' ? S.blocked : '', state: nav.status === 'blocked' ? 'warn' : '',
-      fill: nav.status === 'ok' && routeFrom > 0 ? 1 - nav.distanceM / routeFrom : 0,
-    },
-    { id: 'heart', inVitals: true, base: R.heart.base, viz: 'graph', label: 'Heart rate', value: num(r.heart), unit: 'bpm', tag: 'sim', state: z.heart, lines: [HUD.suit.heart.warnLow, HUD.suit.heart.warnHigh], ...graph('heart', R.heart.bad, R.heart.span) },
-    { id: 'body', inVitals: true, base: R.body.base, viz: 'graph', label: 'Body temp', value: num(r.torsoC, 1), unit: '°C', tag: 'sim', state: z.temp, lines: [HUD.suit.bodyTemp.warnLow, HUD.suit.bodyTemp.warnHigh], ...graph('body', R.body.bad, R.body.span) },
-    { id: 'radiation', base: R.radiation.base, viz: 'graph', label: S.radiation, value: num(e?.radiationUGyPerDay), unit: S.radUnit, tag: e?.radiationIsFixedValue ? S.published : null, state: radAlert ? (radAlert.level === 'critical' ? 'crit' : 'warn') : '', active: e?.radiationUGyPerDay != null, ...graph('radiation', R.radiation.bad) },
-    { id: 'pressure', inVitals: true, base: R.pressure.base, viz: 'graph', label: 'Suit pressure', value: num(r.pressureKpa, 1), unit: 'kPa', tag: 'sim', state: z.pressure, lines: [HUD.suit.pressureKpa.warnLow, HUD.suit.pressureKpa.warnHigh], ...graph('pressure', R.pressure.bad, R.pressure.span) },
-    { id: 'airTemp', base: R.airTemp.base, viz: 'graph', label: S.airTemp, value: num(e?.airTempK != null ? e.airTempK - 273.15 : null, 1), unit: '°C', state: '', active: e?.airTempK != null, ...graph('airTemp', R.airTemp.bad) },
-    { id: 'airPressure', base: R.airPressure.base, viz: 'graph', label: S.pressure, value: num(e?.pressurePa), unit: 'Pa', state: '', active: e?.pressurePa != null, ...graph('airPressure', R.airPressure.bad) },
-  ];
-  // While the vitals hologram is open it shows its readings itself: they leave the tiles
-  // (unless critical or in focus), and come back by the ranking when it closes (importance.js).
-  const candidates = whileVitalsOpen([...pinned, ...others], vitalsOpen);
-  const pinnedShown = candidates.filter((m) => m.pinned);
-  const { ranked } = choose(candidates, rankedShown);
-  rankedShown = ranked.map((m) => m.id);
-  // The order on the dashboard: the pinned ones first, in their fixed order, then the others,
-  // those out of range before the rest. Within that they keep the places they have, so tiles
-  // do not trade places every time two numbers pass each other.
-  const tier = (m) => (m.state === 'crit' ? 2 : m.state === 'warn' ? 1 : 0);
-  const order = [...ranked].sort((a, b) => tier(b) - tier(a) || ranked.indexOf(a) - ranked.indexOf(b));
-  const H = HUD.dash.hDeg;
-  const readings = [...pinnedShown.map((m) => ({ ...m, viz: 'bar' })), ...order].map((m) => ({
-    ...m,
-    hDeg: H[m.viz],
-    scale: sizeOf({ ...m, score: importance(m) }, HUD.dash.size), // what matters more is drawn larger
-    // What the tile shows, as text: it is drawn again only when this changes.
-    sig: [m.label, m.value, m.unit, m.tag, m.word, m.state, m.fill?.toFixed(3), m.history?.length, m.history?.at(-1), m.min, m.max].join('|'),
-  }));
-  return { readings, pinned: pinnedShown, ranked: order, scores: others.map((m) => [m.id, importance(m)]) };
-}
 
 function sortedAlerts() {
   return [...state.alerts.entries()]
@@ -862,13 +240,13 @@ function layersVM() {
   return { tabs, legend };
 }
 
-// ---- 상태 변경 ----
+// ---- state changes ----
 function hasCritical() {
   for (const a of state.alerts.values()) if (a.level === 'critical') return true;
   return false;
 }
 
-/** 비상 테두리의 등급: critical이 하나라도 있으면 critical, 아니면 warn이 있을 때 warn, 없으면 null */
+/** The level of the alert light: critical if any alert is critical, else warn if there is any alert, else null. */
 function frameLevel() {
   if (hasCritical()) return 'critical';
   return state.alerts.size ? 'warn' : null;
@@ -897,7 +275,7 @@ function wire(bus) {
     state.layerSet = layerSet;
     state.grids = grids ?? {};
     dirty.status = dirty.layers = true;
-    // 기본 레이어를 한 번 알린다. 다른 모듈의 layers:ready 처리가 끝난 뒤에 나가게 한 박자 늦춘다.
+    // Announce the default layer once, one beat later: after the other modules have handled layers:ready.
     queueMicrotask(() => {
       if (state.activeLayer) return;
       const first = layerSet.layers.find((l) => l.id === 'optical') ?? layerSet.layers[0];
@@ -940,7 +318,7 @@ function wire(bus) {
       successSound();
     }
     else if (status === 'cancelled' && prev.status !== 'cancelled') showToast(S.guidanceEnded);
-    // 같은 목적지로 가는 길이 눈에 띄게 길어졌으면 돌아가는 길로 바뀐 것이다.
+    // The way to the same destination became clearly longer: the route now goes around something.
     // (Not for the field map: there the distance grows simply because the wearer walks away.)
     else if (frame !== 'room' && status === 'ok' && prev.status === 'ok' && prev.targetId === targetId && distanceM > prev.distanceM + 0.3) showToast(S.recalculated);
     state.nav = { status, targetId: targetId ?? prev.targetId, distanceM: distanceM ?? 0 };
@@ -957,45 +335,14 @@ function wire(bus) {
     // Show what the voice assistant heard, so the wearer knows the command was taken.
     if (text) showToast(`\u201C${String(text).trim().replace(/[.!?]+$/, '')}\u201D`);
     if (intent === 'alert.ack' && state.alerts.size) {
-      state.acked = true; // 점멸을 멈춘다. 테두리와 경보 카드는 alert:clear까지 남는다.
+      state.acked = true; // the flashing stops; the light and the alert card stay until alert:clear
       dirty.banner = true;
     }
-    // The card over a picked place: saying its buttons presses them. (link.js leaves the
-    // route request to us while a place is picked.)
-    if (pick && intent === 'nav.start') navigatePick();
-    else if (intent === 'nav.stop' && (pick || naming)) pressMark('Cancel');
-    // "Mark waypoint": the picked place if bare ground is picked, else where the wearer stands.
-    else if (intent === 'nav.mark') pick?.kind === 'place' ? addWaypoint(pick) : markHere();
-    else if (intent === 'waypoint.record') {
-      const id = naming?.id ?? (pick?.kind === 'waypoint' ? pick.id : null);
-      if (id) startRecording(id);
-      else showToast('Pick a waypoint on the map first');
-    } else if (intent === 'alert.ack' && naming && !naming.listening && rescue.state().phase !== 'armed') endNaming();
-    else if (intent === 'mark.delete') {
-      if (pick?.kind === 'waypoint' || pick?.kind === 'target') deletePicked();
-      else showToast('Pick a waypoint or the target on the map first');
-    }
+    // The card over a picked place and the naming of a waypoint: saying a button presses it.
+    marks.voice(intent, () => rescue.state().phase === 'armed');
   });
-  bus.on('voice:dictation', onDictation);
-  bus.on('nav:position', ({ point }) => {
-    lastMapPoint = point;
-  });
-  // A new session, or the reference space shifted onto the room's kept coordinates
-  // (core/room-frame.js): the places marked in the room are put aside until the scan has found
-  // itself in the stored map. (Waypoints on the Mars map are cells of the data and stay.)
-  const newRoomCoordinates = () => {
-    endNaming(false);
-    clearPick();
-    shelveRoomWaypoints();
-  };
-  ctx.xr.onSessionStart(newRoomCoordinates);
-  ctx.xr.onRealign?.(newRoomCoordinates);
-  bus.on('map:run', onScanRun);
-  bus.on('waypoints:stored', onStoredWaypoints);
   // "Base" is a Mars-map command: the menu follows the mode.
   bus.on('app:mode', () => {
-    endNaming(false);
-    clearPick(); // a place picked on one map means nothing on the other
     dirty.commands = true;
   });
 }
@@ -1021,7 +368,7 @@ function pressCommand(id) {
   dirty.commands = true;
   clickSound();
   if (id === SOS_ID) rescue.press();
-  else if (id.startsWith(NAMING_PREFIX)) pressMark(id.slice(NAMING_PREFIX.length));
+  else if (id.startsWith(NAMING_PREFIX)) marks.pressMark(id.slice(NAMING_PREFIX.length));
   else runCommand(id);
 }
 
@@ -1033,7 +380,7 @@ function initInput() {
     // the map is met by, so the cursor passes between map and menu without a jump.
     { id: 'layers', panel: pLayers, hits: () => layerHits, press: pressLayer, pitchDeg: HUD.pointer.mapPitchDeg },
     { id: 'commands', panel: pCommands, hits: () => commandHits, press: pressCommand },
-    { id: 'pick', panel: pPick, hits: () => pickHits, press: pressPick, pitchDeg: HUD.pointer.mapPitchDeg },
+    { id: 'pick', panel: marks.card, hits: marks.hits, press: marks.press, pitchDeg: HUD.pointer.mapPitchDeg },
   ];
   // PC: mouse click
   const el = ctx.renderer.domElement;
@@ -1059,10 +406,10 @@ function initInput() {
     const { origin, direction } = raycaster.ray;
     if (mode.current === 'mars') {
       const hit = pickOnMap(origin, direction, 40);
-      if (hit) selectPoint(hit.cell);
+      if (hit) marks.selectPoint(hit.cell);
     } else {
       const hit = pickOnFieldMap(origin, direction, 40);
-      if (hit) selectPlace(hit.room);
+      if (hit) marks.selectPlace(hit.room);
     }
   });
 }
@@ -1144,7 +491,6 @@ function updateHands(frame) {
     steady.layers.shown = steady.commands.shown = false;
     if (!commandsPinned) setSosBig(false);
     suit.hide();
-    mapInView = !ctx.xr.presenting; // the PC view always shows the map; with controllers we cannot tell
     return;
   }
 
@@ -1197,7 +543,6 @@ function updateHands(frame) {
   const mapUp = palmUp;
   // The layer menu belongs to the Mars map; in field mode the palm shows the field map alone.
   palmUp = palmUp && mode.current !== 'field';
-  mapInView = palmUp;
   const seen = !!wrist && !crowded;
 
   ctx.camera.getWorldPosition(v2);
@@ -1250,12 +595,7 @@ function updatePointer(frame, now) {
       dirty[flag] = true;
     }
   }
-  const p = res.get('pick');
-  engaged.pick = p.engaged;
-  if (p.hoverId !== pickTouch.hoverId) {
-    pickTouch.hoverId = p.hoverId;
-    dirty.pick = true;
-  }
+  marks.hover(res.get('pick').hoverId);
 
   // A pointer that is on no menu may be on the map: a cursor on the terrain, and a pinch picks
   // the place under it. The same hands that press the left hand's menus (and controllers).
@@ -1272,33 +612,16 @@ function updatePointer(frame, now) {
     ray.show(hit.point, UP);
     if (ray.hand === 'right') mapPointed = true;
     if (ray.pressed) {
-      if (onMars) selectPoint(hit.cell);
-      else selectPlace(hit.room);
+      if (onMars) marks.selectPoint(hit.cell);
+      else marks.selectPlace(hit.room);
     }
     break;
   }
-  // A waypoint that waits for its name does not wait for ever, and neither does the listening.
-  if (naming && now > naming.until) {
-    if (naming.listening) stopRecording('Nothing heard');
-    else endNaming();
-  }
-  // The card stands over the picked place and goes where the map goes; it hides with the map.
-  // (The field map scrolls under the wearer, so its pin is put in place again every frame.)
-  if (pick?.room) showFieldPick(pick.room);
-  const over = pick && (pick.room ? fieldPlaceOnMap(pick.room) : mapCellInRoom(pick.cell));
-  pPick.mesh.visible = !!over;
-  if (!over) popIn(pickPop, false, now);
-  if (over) {
-    pPick.mesh.position.copy(over);
-    pPick.mesh.position.y += HUD.pick.liftM * (ctx.xr.presenting ? 1 : 8);
-    pPick.mesh.lookAt(ctx.camera.getWorldPosition(v1));
-    const size = HUD.pick.scale * (ctx.xr.presenting ? 1 : 6);
-    const k = popIn(pickPop, true, now);
-    pPick.mesh.scale.set(size * k, size * k * k, size);
-  }
+  // The naming's time limits, and the card over the picked place (it goes where the map goes).
+  marks.place(now);
 }
 
-/** 탭 한 칸의 가운데가 화면 어디에 있는지 (CSS 픽셀). 테스트에서 클릭할 자리를 찾는 데 쓴다. */
+/** Where the middle of a tab is on the screen (CSS pixels). Tests use it to find the place to click. */
 function tabScreenXY(id) {
   const hit = layerHits.find((h) => h.id === id);
   if (!hit) return null;
@@ -1310,11 +633,11 @@ function tabScreenXY(id) {
   return { x: r.left + ((v1.x + 1) / 2) * r.width, y: r.top + ((1 - v1.y) / 2) * r.height };
 }
 
-// ---- 모듈 인터페이스 ----
+// ---- module interface ----
 export function init(context) {
   ctx = context;
   const { scene, camera } = ctx;
-  scene.add(camera); // 카메라의 자식이 그려지려면 카메라가 장면에 들어 있어야 한다
+  scene.add(camera); // the camera's children are only drawn when the camera itself is in the scene
 
   rigid = new THREE.Group();
   rigid.name = 'hud';
@@ -1325,9 +648,9 @@ export function init(context) {
 
   // What looks centred when laid out sits a little high in the headset: the cards hang lower.
   if (HUD.followRate === 0) cards.position.y = -HUD.viewDropDeg * UNIT;
-  dash = createDash({ makePanel, parent: cards, unitM: UNIT });
+  dash = createDash({ parent: cards });
   pBanner = makePanel(HUD.banner.wDeg, HUD.banner.hDeg);
-  place(pBanner, (HUD.stage.wDeg - HUD.banner.wDeg) / 2 + HUD.centreShiftDeg, HUD.banner.topDeg, HUD.banner.wDeg, HUD.banner.hDeg);
+  placeOnStage(pBanner, (HUD.stage.wDeg - HUD.banner.wDeg) / 2 + HUD.centreShiftDeg, HUD.banner.topDeg, HUD.banner.wDeg, HUD.banner.hDeg);
   pLayers = makePanel(HUD.layers.wDeg, HUD.layers.hDeg);
   // Voice command menu: lives in the room (over the back of the left hand), hidden until then.
   pCommands = makePanel(HUD.commands.wDeg, HUD.commands.hDeg);
@@ -1338,11 +661,11 @@ export function init(context) {
   const A = HUD.alert;
   const alertTop = HUD.stage.hDeg - A.bottomDeg + A.glowDeg - A.hDeg;
   pEdge = makePanel(A.wDeg, A.hDeg);
-  place(pEdge, (HUD.stage.wDeg - A.wDeg) / 2 + HUD.centreShiftDeg, alertTop, A.wDeg, A.hDeg);
+  placeOnStage(pEdge, (HUD.stage.wDeg - A.wDeg) / 2 + HUD.centreShiftDeg, alertTop, A.wDeg, A.hDeg);
   pEdge.mesh.renderOrder = 999;
   pEdge.mesh.visible = false;
   pAlert = makePanel(A.wDeg, A.hDeg);
-  place(pAlert, (HUD.stage.wDeg - A.wDeg) / 2 + HUD.centreShiftDeg, alertTop, A.wDeg, A.hDeg);
+  placeOnStage(pAlert, (HUD.stage.wDeg - A.wDeg) / 2 + HUD.centreShiftDeg, alertTop, A.wDeg, A.hDeg);
   cards.add(pBanner.mesh, pEdge.mesh, pAlert.mesh);
   wash = makeWash();
   camera.add(wash);
@@ -1350,16 +673,15 @@ export function init(context) {
 
   suit = createSuit(ctx);
   rescue = createRescue(ctx, { showToast, changed: () => (dirty.commands = true), battery: suit.battery });
-  pPick = makePanel(HUD.pick.wDeg, HUD.pick.hDeg);
-  pPick.mesh.visible = false;
-  ctx.scene.add(pPick.mesh);
+  status = createStatus({ state, suit, waypointLabel, vitalsOpen: () => vitalsOpen });
+  marks = createMarks({ ctx, state, showToast, changed: () => (dirty.commands = true) });
   wire(ctx.bus);
   initInput();
   loadFont().then(() => {
     dirty.status = dirty.banner = dirty.layers = true;
   });
 
-  // 테스트와 콘솔에서 상태를 볼 수 있게 열어 둔다.
+  // Left open so that tests and the console can look at the state.
   window.__hud = {
     commandsVM,
     runCommand,
@@ -1378,16 +700,16 @@ export function init(context) {
     suit,
     rescue,
     /** Marked places and the pick card: for tests and the console. */
-    marks: () => ({ pick, naming: naming && { ...naming }, waypoints: [...waypoints.values()], shelved: [...shelved], scan: { ...scan }, card: pick ? pickVM() : null }),
-    pressMark,
-    selectPlace,
-    selectPoint,
-    markHere,
+    marks: marks.debug,
+    pressMark: marks.pressMark,
+    selectPlace: marks.selectPlace,
+    selectPoint: marks.selectPoint,
+    markHere: marks.markHere,
     /** As if the hub had heard `text` after "Record". */
-    dictated: (text) => naming && onDictation({ id: naming.token, text }),
+    dictated: marks.dictated,
     panels: () => ({ layers: pLayers, commands: pCommands, layerHits, commandHits }),
     state,
-    statusVM,
+    statusVM: status.vm,
     bannerVM,
     layersVM,
     tabScreenXY,
@@ -1401,7 +723,7 @@ export function update(frame) {
   if (!ctx) return;
   const now = performance.now();
 
-  // PC 화면: 창이 좁으면 HUD 전체가 보이도록 줄인다. AR에서는 실제 크기 그대로.
+  // PC screen: in a narrow window the HUD is scaled down so that all of it shows. In AR it keeps its real size.
   let s = 1;
   if (!ctx.xr.presenting) {
     const halfH = Math.tan(THREE.MathUtils.degToRad(ctx.camera.fov / 2)) * HUD.distanceM;
@@ -1419,7 +741,7 @@ export function update(frame) {
   updateHands(frame);
   updatePointer(frame, now);
   suit.tick(now, frame.dt);
-  sampleReadings(now);
+  if (status.sample(now)) dirty.status = true; // the graphs moved on
   // The emergency button counts down while armed: the card is redrawn ten times a second then.
   if (rescue.tick(now) && now - lastSosDraw > 100) {
     lastSosDraw = now;
@@ -1439,8 +761,8 @@ export function update(frame) {
     dirty.banner = true;
   }
 
-  // 테두리: critical은 빨강, warn은 같은 테두리를 주황으로. 느리게 밝아졌다 어두워진다.
-  // "경보 확인" 뒤에는 흐리게 멈춘다. mode:change(emergency)는 critical일 때만 보낸다.
+  // The alert light: red for critical, the same light in orange for warn, slowly brightening and
+  // dimming. After "Confirm" it stays dim. mode:change (emergency) is sent only for critical.
   const level = frameLevel();
   // The light around the alert card (mockup): orange for warn, red for critical.
   pEdge.mesh.visible = !!level;
@@ -1491,7 +813,7 @@ export function update(frame) {
   if (vitalsOpen) vitalsAt = onStage(suit.position(v1)) ?? vitalsAt;
   dash.flow(now - vitalsFlipAt < HUD.dash.flowMs && vitalsAt ? { x: vitalsAt[0], y: vitalsAt[1], ids: VITALS_TILES } : null);
   if (dirty.status) {
-    dash.set(statusVM().readings);
+    dash.set(status.vm().readings);
     dirty.status = false;
   }
   dash.tick(frame.dt);
@@ -1511,15 +833,7 @@ export function update(frame) {
     pLayers.tex.needsUpdate = true;
     dirty.layers = false;
   }
-  if (pickTouch.pressedId && now > pickTouch.pressedUntil) {
-    pickTouch.pressedId = null;
-    dirty.pick = true;
-  }
-  if (dirty.pick && pPick.mesh.visible) {
-    pickHits = drawCommands(pPick.g, HUD.pxPerDeg, pickVM());
-    pPick.tex.needsUpdate = true;
-    dirty.pick = false;
-  }
+  marks.draw(now);
   if (dirty.commands && pCommands.mesh.visible) {
     commandHits = sosBig ? drawSosBig(pCommands.g, HUD.pxPerDeg, sosBigVM()) : drawCommands(pCommands.g, HUD.pxPerDeg, commandsVM());
     pCommands.tex.needsUpdate = true;

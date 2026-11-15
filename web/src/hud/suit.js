@@ -51,6 +51,7 @@ import { HUD } from './config.js';
 import { T } from './tokens.js';
 import { suitStates, worst } from './suit-limits.js';
 import { makePalmState } from '../core/palm.js';
+import { finiteOr as num } from '../core/params.js';
 import { makeBeam, floatOverPalm, popIn, popScale } from '../core/hologram.js';
 import { drawVitalChip } from './draw.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
@@ -306,8 +307,6 @@ function makePlate(widthM) {
  */
 export function createSuit(ctx) {
   const K = HUD.suit;
-  const q = new URLSearchParams(location.search);
-  const num = (name, fallback) => (q.has(name) && Number.isFinite(Number(q.get(name))) ? Number(q.get(name)) : fallback);
 
   // ---- readings ----
   const base = { o2: num('simO2', 98), pressureKpa: num('simPressure', K.pressureKpa.nominal), heart: num('simHeart', 72), bodyC: num('simBody', K.body.core) };
