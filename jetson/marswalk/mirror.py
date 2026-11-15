@@ -26,6 +26,10 @@ the hub keeps the newest and streams it to browsers:
                  the wearer's whole view, or "camera", the camera picture filling the frame.
                  Kept in logs/mirror_tune.json for the next start.
 
+  /monitor/record  POST {"on": true|false}: record the pictures and the voices (record.py) into
+                 recordings/ as marswalk-<date>-<time>.mkv, turned into an .mp4 afterwards.
+  /recordings/<name>  a finished recording as a download.
+
 No Meta account, no developer mode, no internet: only the hotspot the headset is already on.
 The room is in the picture only if the browser gave the app a camera; otherwise the background
 is plain.
@@ -34,6 +38,7 @@ import asyncio
 import ipaddress
 import json
 import logging
+import re
 import socket
 import time
 from pathlib import Path
@@ -46,6 +51,7 @@ HERE = Path(__file__).resolve().parent
 MAX_FRAME = 2 * 1024 * 1024
 TUNE_FILE = HERE.parent / "logs" / "mirror_tune.json"
 TUNE_RANGE = {"fovDeg": (35.0, 110.0), "tiltDeg": (-25.0, 25.0)}   # as in web/src/core/mirror.js
+RECORDING_NAME = re.compile(r"^marswalk-[0-9]{8}-[0-9]{6}\.(mkv|mp4)$")   # what record.py names its files
 TUNE_VIEWS = ("full", "camera")   # the wearer's whole view, or the camera picture filling the frame
 STATS_MAX_AGE_S = 5.0     # the app's numbers come once a second: older ones are not about this picture
 STATS_LOG_EVERY_S = 30.0
@@ -137,6 +143,8 @@ class Mirror:
         app.router.add_get("/monitor.mjpg", self.stream)
         app.router.add_get("/monitor.json", self.status)
         app.router.add_post("/monitor/tune", self.set_tune)
+        app.router.add_post("/monitor/record", self.set_record)
+        app.router.add_get("/recordings/{name}", self.recording_file)
 
     def wanted(self) -> int:
         """The "viewers" the app is told: monitor pages open, and one more while a recording runs,
@@ -174,6 +182,8 @@ class Mirror:
                     if msg.data.startswith(b"\xff\xd8"):   # a JPEG; anything else is counted and dropped
                         self.frame, self.at, self.source_peer = bytes(msg.data), self.clock(), peer
                         self.seq += 1
+                        if self.recorder is not None and self.recorder.on:
+                            self.recorder.frame(self.frame, self.at)
                         async with self.fresh:
                             self.fresh.notify_all()
                     # The app counts what it sent against this: it knows how many pictures are
@@ -239,8 +249,44 @@ class Mirror:
                                   "ageS": age, "bytes": len(self.frame) if self.frame else 0,
                                   "info": self.info, "from": self.source_peer, "tune": self.tune,
                                   "stats": self.fresh_stats(),
+                                  "recording": self.recorder.state() if self.recorder is not None else None,
+                                  "recordings": self.recorder.recordings() if self.recorder is not None else [],
                                   **self.extra()},
                                  headers={"Cache-Control": "no-store"})
+
+    async def set_record(self, request: web.Request):
+        """POST {"on": true} starts a recording of the pictures (and the voices, record.py),
+        {"on": false} ends it. Asking for what already is so is no error."""
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            body = None
+        if not isinstance(body, dict) or not isinstance(body.get("on"), bool):
+            return web.json_response({"error": '{"on": true} or {"on": false} expected'}, status=400)
+        if self.recorder is None:
+            return web.json_response({"error": "this hub has no recorder"}, status=409)
+        try:
+            if body["on"] and not self.recorder.on:
+                self.recorder.start()
+                log.info("recording started by %s: %s", request.remote, self.recorder.state())
+            elif not body["on"] and self.recorder.on:
+                log.info("recording stopped by %s: %s", request.remote, self.recorder.stop())
+        except Exception as err:   # RecordError (disk short, folder), or anything the disk throws
+            log.warning("recording: %s", err)
+            return web.json_response({"error": str(err)}, status=409)
+        await self._tell_sources()   # a recording counts as a viewer: pictures are wanted, or no longer
+        return web.json_response({"recording": self.recorder.state()})
+
+    async def recording_file(self, request: web.Request):
+        """A finished recording as a download. Only our own file names: nothing else in the folder,
+        and no way out of it."""
+        name = request.match_info["name"]
+        if self.recorder is None or not RECORDING_NAME.match(name):
+            raise web.HTTPNotFound()
+        path = self.recorder.folder / name
+        if not path.is_file():
+            raise web.HTTPNotFound()
+        return web.FileResponse(path, headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
     async def set_tune(self, request: web.Request):
         try:

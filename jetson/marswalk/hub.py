@@ -25,6 +25,7 @@ from aiohttp import WSMsgType, web
 from . import intents, speech
 from .maps import MapStore, WaypointStore
 from .mirror import Mirror
+from .record import Recorder
 from .alerts import SUIT_TEMP_MESSAGES, SuitTempAlert, Thresholds
 from .sensors import SuitTemp
 from .voice import make_segmenter, make_stt, make_tts
@@ -89,6 +90,11 @@ class Hub:
         self.waypoints = WaypointStore(Path(args.maps_dir))
         self.mirror = Mirror()
         self.mirror.extra = lambda: {"rescue": self.rescue}
+        # The demo video: the monitor's pictures with the wearer's voice and the hub's own (record.py).
+        self.recorder = Recorder(Path(getattr(args, "recordings_dir", JETSON_DIR / "recordings")),
+                                 convert=not getattr(args, "no_convert", False),
+                                 max_seconds=getattr(args, "record_max_min", 30.0) * 60.0)
+        self.mirror.recorder = self.recorder
         self.rescue: dict | None = None   # the rescue signal that is up, if any
         # What a client may send (docs/INTERFACES.md section 4): message type -> handler(client, payload).
         self.handlers = {
@@ -177,6 +183,8 @@ class Hub:
             self.mute_until = time.monotonic() + secs + MUTE_TAIL_S
             await self.broadcast("tts.begin", {"sampleRate": self.tts.sample_rate,
                                                "priority": priority})
+            if self.recorder.on:
+                self.recorder.speech(pcm, self.tts.sample_rate)
             for i in range(0, len(pcm), TTS_CHUNK):
                 if epoch != self.say_epoch:
                     break
@@ -285,6 +293,8 @@ class Hub:
 
     def on_audio(self, client: Client, data: bytes):
         """A binary frame is microphone audio: 16-bit mono PCM at the rate given in mic.begin."""
+        if self.recorder.on and (client.segmenter is not None or client.mic_on):
+            self.recorder.mic(data, client.mic_rate, src=client.peer)   # before the mute: the recording hears the wearer always
         if client.segmenter is not None:
             if time.monotonic() < self.mute_until:
                 client.segmenter.reset()        # the hub is speaking: not a command
@@ -479,6 +489,7 @@ def build_app(hub: Hub) -> web.Application:
     async def on_cleanup(app):
         for t in app["tasks"]:
             t.cancel()
+        hub.recorder.close()   # a recording that runs is finished, not cut off
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
     return app
@@ -532,6 +543,10 @@ def main():
                    help="keep the last N utterances as WAV in logs/utterances/ for tuning (0 = keep none)")
     p.add_argument("--maps-dir", default=str(JETSON_DIR / "maps"),
                    help="where the field maps sent by the headset are kept")
+    p.add_argument("--recordings-dir", default=str(JETSON_DIR / "recordings"),
+                   help="where the monitor page's recordings go")
+    p.add_argument("--record-max-min", type=float, default=30.0, help="a recording ends by itself after this long")
+    p.add_argument("--no-convert", action="store_true", help="keep the recordings as .mkv, make no .mp4")
     p.add_argument("--dev", action="store_true", help="accept dev.* messages from tools/fake_quest.py")
     p.add_argument("-v", "--verbose", action="store_true")
     args = p.parse_args()

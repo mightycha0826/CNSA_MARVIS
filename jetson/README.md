@@ -36,37 +36,6 @@ The same command runs on a PC without a Jetson (no Arduino → `source: mock`; n
 
 Open `https://<Jetson IP>:8443/` in a browser for the connection test page: secure context, WebSocket, temperature, alerts, microphone (hold to talk), TTS playback.
 
-## One click start
-
-After the Jetson was switched on, one double-click on **Start Marswalk** brings everything up. Put the icon on the desktop once:
-
-```bash
-tools/start_all.sh --install-shortcut   # the desktop icon, and "Start Marswalk" in the app list
-```
-
-`Start Marswalk.desktop` in the project folder is the same launcher, but GNOME Files opens it as text instead of running it; the copy on the desktop runs.
-
-The icon runs `tools/start_all.sh` in a terminal window, one line per step, and the window stays open until Enter:
-
-1. **Hotspot**: brings up the connection `marswalk` if it is not up.
-2. **Web app**: builds `web/dist` only if it is missing (a build that is there is never rebuilt).
-3. **Certificate**: makes `certs/` only if it is missing.
-4. **Hub**: stops the hub that is running on the two ports and starts a new one, detached from the window, with its output added to `logs/hub.log` and its pid in `logs/hub.pid`. If the systemd service below is active, the hub is left to it.
-5. **Monitor**: opens `http://localhost:8080/monitor` in the browser, unless a monitor page is open already.
-6. **Headset**: with the headset on the USB cable (adb), opens the app in its browser; otherwise says what to open. Then it waits up to 10 minutes and says, also as a desktop notification, when the headset's page connects and when it is in AR (Enter or Ctrl+C ends the waiting; everything keeps running). Whether the app is in AR is only known while a monitor page is open.
-
-Running it again is safe: the hub is restarted, the rest is left as it is.
-
-| Command | Meaning |
-|---|---|
-| `tools/start_all.sh` | Start (or restart) everything. The hub runs without `--dev` |
-| `tools/start_all.sh --dev` | The same, the hub with `--dev` |
-| `tools/start_all.sh --status` | What is running; changes nothing |
-| `tools/start_all.sh --stop` | Stop the hub; nothing else |
-| `--no-browser`, `--no-wait` | Do not open the monitor page; do not wait for the headset |
-
-Other ports or hub options: `MARSWALK_PORT`, `MARSWALK_HTTP_PORT` and `MARSWALK_HUB_ARGS` (for example `MARSWALK_HUB_ARGS="--wake-word helmet"`); `MARSWALK_LOG_DIR` moves `hub.log` and `hub.pid`. The script never uses sudo.
-
 ## Voice
 
 Speech is **English**. Everything runs on the Jetson CPU through the `sherpa-onnx` wheel (no torch, no GPU).
@@ -144,6 +113,8 @@ tools/start_all.sh --install-shortcut  # put the icon on the desktop and in the 
 
 The launcher also lies in the project folder (`Start MARVIS.desktop`). GNOME Files opens such a file as text instead of running it, which is why the icon on the desktop exists. Nothing in it uses sudo. On the headset one press is still needed: **Field map** or **Mars map** (a browser may only start AR from the wearer's own press).
 
+The hub started this way runs detached from the window and without `--dev` (`tools/start_all.sh --dev` adds it); its output is added to `logs/hub.log` and its pid is in `logs/hub.pid`. If the systemd service below is active, the hub is left to it. A missing `web/dist` or certificate is made, one that is there is never rebuilt. Whether the app is in AR is only known while a monitor page is open, because only then does the app send pictures. `tools/start_all.sh --help` lists the other options (`--no-browser`, `--no-wait`) and the environment variables for other ports, more hub options and another log folder.
+
 ## Start at boot
 
 ```bash
@@ -155,6 +126,8 @@ journalctl -u marswalk-hub -f
 ### Monitor, stored maps, rescue signal
 
 - **Monitor.** `http://localhost:8080/monitor` (or `https://<jetson>:8443/monitor`) shows what the headset app is drawing, live. The app sends JPEG pictures over `/mirror` only while the page is open. No Meta account or developer mode is involved.
+- **Whole view or camera.** The picture shows the wearer's whole view (both eyes, about 118 x 101 degrees) with the camera picture in the middle at its true size; "Camera" on the page gives the old view, the room filling the picture and the edge of the wearer's view cut off. The line under the title shows what the stream is doing: JPEG quality, size of a picture, megabits, delay. The app raises the quality while the hotspot has room and lowers it when it has not; no more than two pictures are ever on their way, so the picture is never seconds old.
+- **Recording.** "Record" on the monitor page writes the pictures with the wearer's microphone and the hub's speech to `recordings/marswalk-<date>-<time>.mkv` (`--recordings-dir`; not in git), and after "Stop" makes an `.mp4` (H.264 + AAC, 30 frames a second) beside it with GStreamer; both can be downloaded from the page. A recording ends by itself after 30 minutes (`--record-max-min`) or when the disk runs short; `--no-convert` keeps the `.mkv` only. While a recording runs, pictures are made even with no monitor page open.
 - **Field maps.** The headset sends the tiles of its obstacle map that changed (a tile is 6.4 m square); the hub keeps them in `maps/` (`--maps-dir`), one JSON file per run holding every tile of that run, the newest 200 runs. After a restart the newest run is still handed back to a headset that asks, and a run that carries on is merged into its own file. Files from before the tiles (one grid per file) are skipped.
 - **Utterances.** The last 100 pieces of speech the hub cut out of the microphone stream are kept as WAV in `logs/utterances/`, named by time and by what the recogniser made of them (`--keep-audio 0` keeps none). This is audio of whoever spoke near the headset; it stays on the Jetson and `logs/` is not in git.
 - **Rescue signal.** The headset's emergency button (the red bar on its command card, or "SOS" / "Rescue" / "Help" then "Confirm" by voice) arrives as `rescue.signal`. The hub logs it, raises the alert `crew-rescue` on every other headset, shows a banner on the monitor page, speaks, and after 5 s acknowledges in the name of a crew that does not exist ("Base crew (simulated)").
@@ -172,13 +145,13 @@ journalctl -u marswalk-hub -f
 | `marswalk/voice.py` | STT / TTS backends |
 | `marswalk/maps.py` | The field map on disk (`maps/`) |
 | `marswalk/mirror.py` | The headset's view for the monitor page (`/mirror`, `/monitor`) |
+| `marswalk/record.py` | Recording of the monitor's pictures and the voices (`recordings/`) |
 | `marswalk/static/monitor.html` | The monitor page |
 | `marswalk/static/index.html` | Connection test page |
 | `tools/fake_quest.py` | Fake Quest client |
 | `tools/voice_selftest.py` | Voice round trip without a microphone |
 | `tools/arduino.sh` | Build / flash the firmware from the Jetson |
 | `tools/build_web.sh` | Build the web app into `web/dist` |
-| `tools/start_all.sh` | One click start: hotspot, hub, monitor page, headset |
 | `tools/start_all.sh` | One click start: hotspot, hub, monitor page, headset |
 
 ## Checked with the real web app

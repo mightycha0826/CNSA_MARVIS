@@ -6,3 +6,4 @@ models/
 tts_out_*.wav
 logs/
 maps/
+recordings/
