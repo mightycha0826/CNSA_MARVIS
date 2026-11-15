@@ -36,6 +36,37 @@ The same command runs on a PC without a Jetson (no Arduino → `source: mock`; n
 
 Open `https://<Jetson IP>:8443/` in a browser for the connection test page: secure context, WebSocket, temperature, alerts, microphone (hold to talk), TTS playback.
 
+## One click start
+
+After the Jetson was switched on, one double-click on **Start Marswalk** brings everything up. Put the icon on the desktop once:
+
+```bash
+tools/start_all.sh --install-shortcut   # the desktop icon, and "Start Marswalk" in the app list
+```
+
+`Start Marswalk.desktop` in the project folder is the same launcher, but GNOME Files opens it as text instead of running it; the copy on the desktop runs.
+
+The icon runs `tools/start_all.sh` in a terminal window, one line per step, and the window stays open until Enter:
+
+1. **Hotspot**: brings up the connection `marswalk` if it is not up.
+2. **Web app**: builds `web/dist` only if it is missing (a build that is there is never rebuilt).
+3. **Certificate**: makes `certs/` only if it is missing.
+4. **Hub**: stops the hub that is running on the two ports and starts a new one, detached from the window, with its output added to `logs/hub.log` and its pid in `logs/hub.pid`. If the systemd service below is active, the hub is left to it.
+5. **Monitor**: opens `http://localhost:8080/monitor` in the browser, unless a monitor page is open already.
+6. **Headset**: with the headset on the USB cable (adb), opens the app in its browser; otherwise says what to open. Then it waits up to 10 minutes and says, also as a desktop notification, when the headset's page connects and when it is in AR (Enter or Ctrl+C ends the waiting; everything keeps running). Whether the app is in AR is only known while a monitor page is open.
+
+Running it again is safe: the hub is restarted, the rest is left as it is.
+
+| Command | Meaning |
+|---|---|
+| `tools/start_all.sh` | Start (or restart) everything. The hub runs without `--dev` |
+| `tools/start_all.sh --dev` | The same, the hub with `--dev` |
+| `tools/start_all.sh --status` | What is running; changes nothing |
+| `tools/start_all.sh --stop` | Stop the hub; nothing else |
+| `--no-browser`, `--no-wait` | Do not open the monitor page; do not wait for the headset |
+
+Other ports or hub options: `MARSWALK_PORT`, `MARSWALK_HTTP_PORT` and `MARSWALK_HUB_ARGS` (for example `MARSWALK_HUB_ARGS="--wake-word helmet"`); `MARSWALK_LOG_DIR` moves `hub.log` and `hub.pid`. The script never uses sudo.
+
 ## Voice
 
 Speech is **English**. Everything runs on the Jetson CPU through the `sherpa-onnx` wheel (no torch, no GPU).
@@ -100,6 +131,19 @@ Current commands (kept to what the demo needs; every extra phrase is one more th
 
 Received TTS is saved as `tts_out_<n>.wav`. Use `--url wss://10.42.0.1:8443/ws` to reach the Jetson from another machine.
 
+## One click start
+
+After the Jetson was switched on, double-click **Start MARVIS** on the desktop (or pick it in the app list). It brings up the hotspot if it is down, starts the hub (stopping one that runs), opens the monitor page, opens the app in the headset's browser when the headset is reachable over adb, and says in its window when the headset connects and when it is in AR. Run again at any time: it restarts the hub and leaves the rest alone.
+
+```bash
+tools/start_all.sh                     # the same from a terminal
+tools/start_all.sh --status            # what is running; changes nothing
+tools/start_all.sh --stop              # stop the hub
+tools/start_all.sh --install-shortcut  # put the icon on the desktop and in the app list (once per machine)
+```
+
+The launcher also lies in the project folder (`Start MARVIS.desktop`). GNOME Files opens such a file as text instead of running it, which is why the icon on the desktop exists. Nothing in it uses sudo. On the headset one press is still needed: **Field map** or **Mars map** (a browser may only start AR from the wearer's own press).
+
 ## Start at boot
 
 ```bash
@@ -134,6 +178,8 @@ journalctl -u marswalk-hub -f
 | `tools/voice_selftest.py` | Voice round trip without a microphone |
 | `tools/arduino.sh` | Build / flash the firmware from the Jetson |
 | `tools/build_web.sh` | Build the web app into `web/dist` |
+| `tools/start_all.sh` | One click start: hotspot, hub, monitor page, headset |
+| `tools/start_all.sh` | One click start: hotspot, hub, monitor page, headset |
 
 ## Checked with the real web app
 
