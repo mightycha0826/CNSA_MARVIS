@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="ko">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>기기 점검 · Marswalk Visor</title>
+    <title>Device check · Project Marvis</title>
     <style>
       html, body { margin: 0; background: #0b0d10; color: #e8eaed; font-family: system-ui, sans-serif; }
       main { max-width: 1100px; margin: 0 auto; padding: 24px; }
@@ -24,12 +24,12 @@
   </head>
   <body>
     <main>
-      <h1>기기 점검</h1>
-      <p>① <b>AR 점검 시작</b>을 누르고 권한을 허용합니다. ② 10초 동안 방을 둘러보고 <b>두 손을 눈앞에 듭니다.</b> ③ 자동으로 끝나면 아래 표를 팀에 공유합니다. 마이크는 따로 누릅니다.</p>
+      <h1>Device check</h1>
+      <p>① Press <b>Start AR check</b> and grant the permissions. ② Look around the room for 10 seconds and <b>hold both hands up in front of you.</b> ③ When it ends by itself, share the table below with the team. The microphone has its own button.</p>
       <div class="buttons">
-        <button id="start" disabled>AR 점검 시작 (10초)</button>
-        <button id="mic" class="second">마이크 점검</button>
-        <button id="copy" class="second">결과 복사</button>
+        <button id="start" disabled>Start AR check (10 s)</button>
+        <button id="mic" class="second">Microphone check</button>
+        <button id="copy" class="second">Copy results</button>
       </div>
       <table id="rows"></table>
       <pre id="raw"></pre>

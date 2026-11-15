@@ -7,11 +7,11 @@
 // as a solar particle event. Change them with ?radWarn= and ?radCrit=.
 
 import { bus } from './bus.js';
+import { numberOr } from './params.js';
 
-const q = new URLSearchParams(location.search);
 export const RADIATION = {
-  warnUGyPerDay: Number(q.get('radWarn')) || 300,
-  criticalUGyPerDay: Number(q.get('radCrit')) || 600,
+  warnUGyPerDay: numberOr('radWarn', 300),
+  criticalUGyPerDay: numberOr('radCrit', 600),
   /** The alert clears only below this fraction of the warn threshold, so it does not flap. */
   clearRatio: 0.9,
 };

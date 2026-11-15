@@ -1,5 +1,6 @@
-// Exact raster traversal for collision tests, plus independent 8-way A*/Dijkstra
-// searches used to validate and benchmark the cached goal-tree planner.
+// Exact raster traversal for collision tests, plus 8-way A*/Dijkstra searches: A* is the Worker's
+// live answer while a destination tree is unfinished (planner.worker.js); plan() and the Dijkstra
+// variant are used by the tests and the benchmark to check the cached goal-tree planner.
 
 const EPS = 1e-10;
 
@@ -124,7 +125,7 @@ export class Search {
         if (!dc && !dr) continue;
         const c = up[0] + dc, r = up[1] + dr;
         if (c < 0 || c >= cols || r < 0 || r >= rows) continue;
-        const v = r * cols + c, vp = [c, r];
+        const v = r * cols + c;
         if (v === this.s || !Number.isFinite(this.field.costs[v])) continue;
         // For neighbouring cell centres, the edge crosses each cell over
         // exactly half its length. Diagonal corner clearance is still checked.

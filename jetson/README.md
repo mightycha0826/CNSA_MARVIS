@@ -1,6 +1,7 @@
 # jetson/ — Jetson hub (role E)
 
-Everything outside the headset: suit temperature sensor, alerts, voice assistant, web app serving.
+Everything outside the headset: the temperature sensor on the suit (ambient temperature: the air around the wearer), alerts, voice assistant, web app serving.
+The letters A to F are the team's six parts ([README, Team](../README.md#team)).
 All formats follow [docs/INTERFACES.md](../docs/INTERFACES.md) sections 4–6. Headset connection: [QUEST_CONNECT.md](QUEST_CONNECT.md). Firmware: [../arduino/](../arduino/README.md).
 
 ## One-time setup
@@ -28,7 +29,7 @@ Without `uv`: `python3 -m venv .venv && .venv/bin/pip install -r requirements.tx
 | `--http-port 8080` | Also serve plain HTTP (for `adb reverse` / `localhost` only) |
 | `--serial /dev/ttyACM0` | Arduino port. Default: auto-detect. `none`: mock temperature only |
 | `--static ../web/dist` | B's build output. If missing, the connection test page is served |
-| `--warn-c 30 --critical-c 35 --clear-c 28` | Temperature alert thresholds (tune with the real sensor) |
+| `--warn-c 30 --critical-c 35 --margin-c 1` | Temperature alert thresholds (tune with the real sensor). An alert steps down once the temperature is `margin` under its threshold |
 | `--wake-word helmet` | Only obey speech that contains the word ("Helmet, status report"). For rooms where other people talk; off by default |
 | `--stt auto --tts auto` | Speech backends. `auto` uses the models if present, otherwise `null` / `tone` |
 
@@ -57,7 +58,7 @@ What makes it robust:
 - **The headset only streams audio; the hub decides what is speech.** A neural detector copes with noise and the headset's automatic gain, where a loudness threshold in the browser did not.
 - **The microphone is ignored while the hub is speaking**, so it never hears its own voice as a command.
 - **Short commands** ("Status", "Base", "Thermal") and **fuzzy matching**: "thermo mat" still means "thermal map"; phrases under 5 letters must match exactly, so "shop" is not "stop".
-- **The microphone permission is asked on the 2D page**, before the AR session starts, and the page shows `Voice: mic on · audio running` above the Start AR button when it is ready.
+- **The microphone permission is asked on the 2D page**, before the AR session starts, and the page shows `Voice: mic on · audio running` above the two start buttons (Mars map, Field map) when it is ready.
 - **The headset reports its microphone state** (`voice.status`) and the hub logs it, with the input level every 10 s. Everything the recognizer hears, matched or not, goes to `logs/heard.log`.
 
 ### Adding or changing a command
@@ -74,15 +75,15 @@ Edit [`commands.json`](commands.json) and save. The hub reloads it by itself; a 
 - `wake_word` (or `--wake-word helmet`) makes the hub obey only speech that contains the word.
 - Try a sentence without a headset: `.venv/bin/python tools/voice_selftest.py --text "show me the thermal map"`.
 
-Current commands: "Status", "Navigate", "Base", "Stop", "Mark target", "Clear target", "Thermal" / "Optical" / "Slope" / "Elevation", "Thermal off", "Confirm", "Night mode", and the longer forms in [INTERFACES.md section 6](../docs/INTERFACES.md#6-voice-commands).
+Current commands (kept to what the demo needs; every extra phrase is one more thing ordinary talk can trigger): "Status", "Navigate" (to the nearby point about 20 m from the base; "Take me to the survey site" names the far one), "Base", "Mark waypoint" (then "Record" to say its name, or "Confirm"), "Delete" (the waypoint or target picked on the map), "Stop", "Confirm", "SOS" / "Rescue" / "Help" (arms the SOS; one "Confirm" then sends it, "Cancel rescue" withdraws it), "Thermal" / "Optical" / "Slope" / "Elevation", and the longer forms in [INTERFACES.md section 6](../docs/INTERFACES.md#6-voice-commands).
 
 - The critical alert sentence is synthesized at startup, so it plays without the 1 s delay.
-- `status.report` is answered by the hub itself: suit temperature, alerts, route state.
+- `status.report` is answered by the hub itself: ambient temperature, alerts, route state.
 - An `urgent` utterance drops normal ones still waiting; the browser cuts audio already playing.
 
 ### Headset menu and diagnostics
 
-- The hub sends its command list (`voice.commands`) when a headset connects and whenever `commands.json` changes. The headset shows it over the back of the left hand; picking an entry comes back as `voice.text` and runs like speech. `"say"` sets the label, `"menu": false` keeps a command out of the list.
+- The hub sends its command list (`voice.commands`) when a headset connects and whenever `commands.json` changes. The headset shows it as a card above the back of the left hand; pointing at an entry and pinching comes back as `voice.text` and runs like speech. `"say"` sets the label, `"menu": false` keeps a command out of the list, and `"mode": "mars"` or `"field"` shows it only on that map.
 - The headset reports errors, AR session events (start, end, visibility, reference space reset) and its head position every 5 s as `client.log`. They are in `logs/headset.log`; errors also appear in the hub log.
 
 ## Testing without the headset
@@ -100,6 +101,21 @@ Current commands: "Status", "Navigate", "Base", "Stop", "Mark target", "Clear ta
 
 Received TTS is saved as `tts_out_<n>.wav`. Use `--url wss://10.42.0.1:8443/ws` to reach the Jetson from another machine.
 
+## One click start
+
+After the Jetson was switched on, double-click **Start MARVIS** on the desktop (or pick it in the app list). It brings up the hotspot if it is down, starts the hub (stopping one that runs), opens the monitor page, opens the app in the headset's browser when the headset is reachable over adb, and says in its window when the headset connects and when it is in AR. Run again at any time: it restarts the hub and leaves the rest alone.
+
+```bash
+tools/start_all.sh                     # the same from a terminal
+tools/start_all.sh --status            # what is running; changes nothing
+tools/start_all.sh --stop              # stop the hub
+tools/start_all.sh --install-shortcut  # put the icon on the desktop and in the app list (once per machine)
+```
+
+The launcher also lies in the project folder (`Start MARVIS.desktop`). GNOME Files opens such a file as text instead of running it, which is why the icon on the desktop exists. Nothing in it uses sudo. On the headset one press is still needed: **Field map** or **Mars map** (a browser may only start AR from the wearer's own press).
+
+The hub started this way runs detached from the window and without `--dev` (`tools/start_all.sh --dev` adds it); its output is added to `logs/hub.log` and its pid is in `logs/hub.pid`. If the systemd service below is active, the hub is left to it. A missing `web/dist` or certificate is made, one that is there is never rebuilt. Whether the app is in AR is only known while a monitor page is open, because only then does the app send pictures. `tools/start_all.sh --help` lists the other options (`--no-browser`, `--no-wait`) and the environment variables for other ports, more hub options and another log folder.
+
 ## Start at boot
 
 ```bash
@@ -108,31 +124,45 @@ sudo systemctl daemon-reload && sudo systemctl enable --now marswalk-hub
 journalctl -u marswalk-hub -f
 ```
 
+### Monitor, stored maps, rescue signal
+
+- **Monitor.** `http://localhost:8080/monitor` (or `https://<jetson>:8443/monitor`) shows what the headset app is drawing, live. The app sends JPEG pictures over `/mirror` only while the page is open. No Meta account or developer mode is involved.
+- **Whole view or camera.** The picture shows the wearer's whole view (both eyes, about 118 x 101 degrees) with the camera picture in the middle at its true size; "Camera" on the page gives the old view, the room filling the picture and the edge of the wearer's view cut off. The line under the title shows what the stream is doing: JPEG quality, size of a picture, megabits, delay. The app raises the quality while the hotspot has room and lowers it when it has not; no more than two pictures are ever on their way, so the picture is never seconds old.
+- **Recording.** "Record" on the monitor page writes the pictures with the wearer's microphone and the hub's speech to `recordings/marswalk-<date>-<time>.mkv` (`--recordings-dir`; not in git), and after "Stop" makes an `.mp4` (H.264 + AAC, 30 frames a second) beside it with GStreamer; both can be downloaded from the page. A recording ends by itself after 30 minutes (`--record-max-min`) or when the disk runs short; `--no-convert` keeps the `.mkv` only. While a recording runs, pictures are made even with no monitor page open.
+- **Field maps.** The headset sends the tiles of its obstacle map that changed (a tile is 6.4 m square); the hub keeps them in `maps/` (`--maps-dir`), one JSON file per run holding every tile of that run, the newest 200 runs. After a restart the newest run is still handed back to a headset that asks, and a run that carries on is merged into its own file. Files from before the tiles (one grid per file) are skipped.
+- **Utterances.** The last 100 pieces of speech the hub cut out of the microphone stream are kept as WAV in `logs/utterances/`, named by time and by what the recogniser made of them (`--keep-audio 0` keeps none). This is audio of whoever spoke near the headset; it stays on the Jetson and `logs/` is not in git.
+- **Rescue signal.** The headset's emergency button (the red bar on its command card, or "SOS" / "Rescue" / "Help" then "Confirm" by voice) arrives as `rescue.signal`. The hub logs it, raises the alert `crew-rescue` on every other headset, shows a banner on the monitor page, speaks, and after 5 s acknowledges in the name of a crew that does not exist ("Base crew (simulated)").
+
 ## Layout
 
 | File | Contents |
 |---|---|
 | `marswalk/hub.py` | HTTPS + WSS server, 1 Hz telemetry, message handling, voice flow |
 | `marswalk/sensors.py` | Serial reader; falls back to `mock` after 5 s of silence |
-| `marswalk/alerts.py` | Temperature alert state machine (warn → critical, clears below 28 °C) |
+| `marswalk/alerts.py` | Temperature alert state machine (the level follows the temperature up and down, 1 °C margin) |
 | `commands.json` | The voice commands (edit this to add or change one) |
 | `marswalk/intents.py` | Matches what was heard against `commands.json` |
 | `marswalk/speech.py` | Sentences the hub speaks (numbers spelled out) |
 | `marswalk/voice.py` | STT / TTS backends |
+| `marswalk/maps.py` | The field map on disk (`maps/`) |
+| `marswalk/mirror.py` | The headset's view for the monitor page (`/mirror`, `/monitor`) |
+| `marswalk/record.py` | Recording of the monitor's pictures and the voices (`recordings/`) |
+| `marswalk/static/monitor.html` | The monitor page |
 | `marswalk/static/index.html` | Connection test page |
 | `tools/fake_quest.py` | Fake Quest client |
 | `tools/voice_selftest.py` | Voice round trip without a microphone |
 | `tools/arduino.sh` | Build / flash the firmware from the Jetson |
 | `tools/build_web.sh` | Build the web app into `web/dist` |
+| `tools/start_all.sh` | One click start: hotspot, hub, monitor page, headset |
 
 ## Checked with the real web app
 
-With `web/dist` built, the hub serves B's app and `link.js` connects to it (`http://localhost:8080/?jetson=ws://localhost:8080/ws&mock=data,hazard` on the Jetson itself): telemetry reaches the status panel, a critical temperature puts the HUD in emergency mode, and spoken "Take me to the survey site" / "Show the thermal map" arrive as `nav:request` / `layer:toggle`.
+With `web/dist` built, the hub serves B's app and `link.js` connects to it (`http://localhost:8080/?jetson=ws://localhost:8080/ws&mock=data,hazard` on the Jetson itself): telemetry reaches the ambient temperature tile, a critical temperature puts the HUD in emergency mode, and spoken "Take me to the survey site" / "Show the thermal map" arrive as `nav:request` / `layer:toggle`.
 
 The web app's voice link is `web/src/core/voice.js`: it streams the microphone continuously and plays the hub's speech (`urgent` cuts what is playing). `?voice=0` turns it off; `?mockMic=a.wav,b.wav` uses audio files as the microphone. Checked in a PC browser with `mockMic`: "Thermal" switched the map layer and "Navigate" made D's planner compute the route. Not yet confirmed with the headset's own microphone.
 
 ## Not verified yet
 
-- **Real voices and a real microphone.** Accuracy was measured only with synthetic speech (18 of 18 commands through the streaming path). After a session with the headset, read `logs/heard.log` and add what was misheard to `commands.json`.
-- **Real sensor.** The firmware runs on the Mega 2560, but no sensor has been wired yet. Alert thresholds are still the starting values.
+- **Real voices and a real microphone.** Accuracy was measured only with synthetic speech (18 of 18 test sentences through the streaming path, before the command list was shortened; not measured again since). After a session with the headset, read `logs/heard.log` and add what was misheard to `commands.json`.
+- **Real sensor.** A sensor is wired and read by the hub (2026-11-14: warming it by hand raised the alerts). Alert thresholds are still the starting values.
 - `dev.*` messages are development-only and not in INTERFACES.md. The browser never sends them; the hub accepts them only with `--dev`.

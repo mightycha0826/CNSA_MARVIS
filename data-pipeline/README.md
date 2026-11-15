@@ -1,5 +1,7 @@
 # data-pipeline (slot C)
 
+The letters A to F are the team's six parts ([README, Team](../README.md#team)).
+
 Downloads the NASA source data and processes it into the layer files in `web/public/data/`. What the files are is described in [docs/DATA.md](../docs/DATA.md).
 
 ## Run

@@ -1,5 +1,5 @@
-// Reads the headset's live depth image into the live grid (grid.js). Called by index.js twice a
-// second, only when the session has `depth-sensing` (?depth=1).
+// Reads the headset's live depth image into the live grid (grid.js). Called by index.js ten
+// times a second (SCAN.depthMs), only when the session has `depth-sensing` (field mode, or ?depth=1).
 //
 // On the Quest 3 depth only exists as a texture (session.depthUsage 'gpu-optimized'): one layer
 // per eye holding depth-buffer values (0..1) for a projection with the planes depthNear and
@@ -12,9 +12,18 @@
 
 import * as THREE from 'three';
 import { FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
-import { addDepthView, depthBufferToMeters } from './grid.js';
+import { addDepthView, depthTable } from './grid.js';
 
-let reader = null; // { texture, target, bytes, quad }, made on the first read
+let reader = null; // { texture, target, bytes, quad, n, cfg, near, far, metres }, made on the first read
+
+/**
+ * What the headset's depth image is, known from the first read on: for the scan's stats (and so the hub's log).
+ *   reachM   how far the last read reached along the floor (grid.js: addDepthView)
+ *   costMs   how long the last read took in all (index.js spaces the reads by it: SCAN.depthBusy)
+ *   gpuMs, pointsMs   the slowest read since index.js last reported them (stats.readMs): how long
+ *            the frame waited for the GPU to hand the pixels back, and how long placing the points took
+ */
+export const depthImage = { width: 0, height: 0, samples: 0, reachM: 0, costMs: 0, gpuMs: 0, pointsMs: 0 };
 
 /** @returns false when the browser had no depth image for this frame (nothing was added) */
 export function readDepth(renderer, frame, grid, cfg) {
@@ -26,10 +35,15 @@ export function readDepth(renderer, frame, grid, cfg) {
   // No depth is normal on some frames: for a moment after the session starts, or between images.
   if (!depth?.texture || depth.isValid === false || !(depth.depthNear > 0)) return false;
 
-  const n = cfg.depthSamples;
   if (!reader) {
-    console.info('[scan] live depth:', depth.width, 'x', depth.height, 'near', depth.depthNear, 'far', depth.depthFar, 'rawValueToMeters', depth.rawValueToMeters);
+    // Never more samples per side than the image has pixels: two samples of one pixel are one
+    // measurement counted twice, and minPoints is there to ask for several.
+    const n = Math.max(1, Math.min(cfg.depthSamples, depth.width || cfg.depthSamples, depth.height || cfg.depthSamples));
+    Object.assign(depthImage, { width: depth.width ?? 0, height: depth.height ?? 0, samples: n });
+    console.info('[scan] live depth:', depth.width, 'x', depth.height, 'near', depth.depthNear, 'far', depth.depthFar, 'rawValueToMeters', depth.rawValueToMeters, 'samples per side', n);
     reader = {
+      n,
+      cfg: n === cfg.depthSamples ? cfg : { ...cfg, depthSamples: n },
       texture: new THREE.ExternalTexture(),
       target: new THREE.WebGLRenderTarget(n, n, { depthBuffer: false }),
       bytes: new Uint8Array(n * n * 4),
@@ -53,13 +67,14 @@ export function readDepth(renderer, frame, grid, cfg) {
       ),
     };
   }
-  const { texture, target, bytes, quad } = reader;
+  const { texture, target, bytes, quad, n } = reader;
   texture.sourceTexture = depth.texture;
   quad.material.uniforms.depthMap.value = texture;
   quad.material.uniforms.layer.value = depth.imageIndex ?? 0;
 
   const gl = renderer.getContext();
   const before = renderer.getRenderTarget();
+  const t0 = performance.now();
   try {
     renderer.xr.enabled = false; // draw into target, not into the headset's eyes
     renderer.setRenderTarget(target);
@@ -71,26 +86,45 @@ export function readDepth(renderer, frame, grid, cfg) {
     quad.render(renderer);
     // Read while target is still the current one. After the restore three.js would re-bind the
     // wrong framebuffer of a multisampled headset target and that frame would come out empty.
-    // shortcut: waits for the GPU twice a second; if frames drop, switch to readRenderTargetPixelsAsync.
+    // shortcut: waits for the GPU at every read (ten a second). How long is not known: it is
+    // timed here and goes to the hub's log (stats.readMs, the first number), and index.js reads
+    // less often by itself when it is long (SCAN.depthBusy). Reading back asynchronously
+    // (renderer.readRenderTargetPixelsAsync) would not make the map any faster: three.js polls
+    // the GPU from a timer, so the pixels come a frame later. It only takes the wait out of this
+    // frame, and is worth doing if that wait is more than about 3 ms. It needs: the call made
+    // here, while `target` is current; the depth image's projection and pose copied and kept
+    // with the request (the points must be placed with the pose of the image that was read);
+    // one read in flight at a time; the result dropped when the scan was reset meanwhile; and
+    // the points added from update(), not from the promise.
     renderer.readRenderTargetPixels(target, 0, 0, n, n, bytes);
   } finally {
     // index.js carries on after an error here, so the headset's target must be back either way.
     renderer.setRenderTarget(before);
     renderer.xr.enabled = true;
   }
+  const t1 = performance.now();
 
-  const { depthNear, depthFar } = depth;
-  addDepthView(
+  // Two bytes a sample -> metres, from a table made for this image's near and far planes (they
+  // do not change from read to read; if they ever do, the table is made again).
+  if (reader.near !== depth.depthNear || reader.far !== depth.depthFar) {
+    reader.near = depth.depthNear;
+    reader.far = depth.depthFar;
+    reader.metres = depthTable(depth.depthNear, depth.depthFar);
+  }
+  const metres = reader.metres;
+  depthImage.reachM = addDepthView(
     grid,
-    (u, v) => {
-      const k = (Math.floor(v * n) * n + Math.floor(u * n)) * 4; // readPixels rows run bottom to top, like v
-      return depthBufferToMeters((bytes[k] + bytes[k + 1] / 255) / 255, depthNear, depthFar);
-    },
+    // sample (i, j) of n x n: readPixels rows run bottom to top, like v
+    (u, v, i, j) => metres[(bytes[(j * n + i) * 4] << 8) | bytes[(j * n + i) * 4 + 1]],
     // The depth image's own camera (core/xr.js asks for it with matchDepthView: false); the eye's
     // on a browser that gives none.
     depth.projectionMatrix ?? view.projectionMatrix,
     (depth.transform ?? view.transform).matrix,
-    cfg,
+    reader.cfg,
   );
+  const t2 = performance.now();
+  depthImage.costMs = t2 - t0;
+  depthImage.gpuMs = Math.max(depthImage.gpuMs, t1 - t0);
+  depthImage.pointsMs = Math.max(depthImage.pointsMs, t2 - t1);
   return true;
 }

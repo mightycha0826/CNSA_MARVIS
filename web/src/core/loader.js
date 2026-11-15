@@ -1,24 +1,26 @@
-// 데이터 로더.
-// public/data/ 의 layerset.json, *.bin, traverse.json, env.json을 읽어
-//   - `layers:ready` 를 한 번 보내고
-//   - `env:update` 를 config.envIntervalMs 마다 표본 하나씩 보낸다 (끝나면 처음부터).
-// 형식은 INTERFACES 2장·3장. 목 모드(mock.data)에서는 파일 대신 mock/layers.js를 쓴다.
+// Data loader.
+// Reads layerset.json, *.bin, traverse.json and env.json from public/data/, then
+//   - sends `layers:ready` once, and
+//   - sends `env:update` with one sample every config.envIntervalMs (starting over at the end).
+// Formats: INTERFACES sections 2 and 3. In mock mode (mock.data) mock/layers.js stands in for the files.
+// It also adds one derived waypoint, `near`: a destination about 20 m from the base (?near=).
 
 import { bus } from './bus.js';
 import { config, mock, DATA_BASE } from './config.js';
+import { nearbyWaypoint } from './waypoints.js';
 
-const assetOverrides = new Map(); // 파일 이름 → blob 주소 (목 모드의 이미지)
+const assetOverrides = new Map(); // file name → blob URL (the images of mock mode)
 
 /**
- * 레이어의 `file`을 불러올 주소로 바꾼다. 이미지 레이어를 읽을 때 쓴다.
+ * Turns a layer's `file` into the URL to load it from. Used when reading an image layer.
  *   new THREE.TextureLoader().load(ctx.assetUrl(layer.file))
- * 목 모드에서는 가짜 이미지의 주소가 나온다.
+ * In mock mode it gives the URL of the fake image.
  */
 export function assetUrl(file) {
   return assetOverrides.get(file) ?? DATA_BASE + file;
 }
 
-// Vite 개발 서버는 없는 파일에도 index.html을 200으로 돌려주므로 content-type도 본다.
+// The Vite dev server answers 200 with index.html for a file that is not there, so the content-type is checked too.
 function isMissing(res) {
   return !res.ok || (res.headers.get('content-type') ?? '').includes('text/html');
 }
@@ -26,26 +28,26 @@ function isMissing(res) {
 async function fetchJson(file, { optional = false } = {}) {
   try {
     const res = await fetch(DATA_BASE + file);
-    if (isMissing(res)) throw new Error(res.ok ? '파일 없음' : `HTTP ${res.status}`);
+    if (isMissing(res)) throw new Error(res.ok ? 'file not found' : `HTTP ${res.status}`);
     return await res.json();
   } catch (err) {
     if (optional) {
-      console.warn(`[loader] ${file} 없음 (${err.message}). 건너뜁니다.`);
+      console.warn(`[loader] ${file} is missing (${err.message}). Skipping it.`);
       return null;
     }
-    throw new Error(`${file} 을(를) 읽지 못했습니다: ${err.message}`);
+    throw new Error(`could not read ${file}: ${err.message}`);
   }
 }
 
 async function fetchGrid(layer, grid) {
   const res = await fetch(DATA_BASE + layer.file);
-  if (isMissing(res)) throw new Error(`${layer.file}: ${res.ok ? '파일 없음' : `HTTP ${res.status}`}`);
+  if (isMissing(res)) throw new Error(`${layer.file}: ${res.ok ? 'file not found' : `HTTP ${res.status}`}`);
   const buf = await res.arrayBuffer();
   const expected = grid.cols * grid.rows;
   if (buf.byteLength !== expected * 4) {
-    throw new Error(`${layer.file}: 길이 ${buf.byteLength}바이트, 기대 ${expected * 4}바이트 (cols*rows*4)`);
+    throw new Error(`${layer.file}: ${buf.byteLength} bytes long, expected ${expected * 4} bytes (cols*rows*4)`);
   }
-  // 리틀 엔디언 Float32 (INTERFACES 2.2). 현재 쓰는 기기는 모두 리틀 엔디언이다.
+  // Little-endian Float32 (INTERFACES 2.2). Every device in use is little-endian.
   return new Float32Array(buf);
 }
 
@@ -59,7 +61,7 @@ async function loadReal() {
         try {
           grids[l.id] = await fetchGrid(l, layerSet.grid);
         } catch (err) {
-          console.warn(`[loader] 숫자 격자 '${l.id}' 를 읽지 못했습니다:`, err.message);
+          console.warn(`[loader] could not read the numeric grid '${l.id}':`, err.message);
         }
       }),
   );
@@ -71,7 +73,7 @@ async function loadReal() {
 function playEnv(env) {
   const samples = env?.samples ?? [];
   if (!samples.length) {
-    console.warn('[loader] env.json에 표본이 없어 env:update를 보내지 않습니다.');
+    console.warn('[loader] env.json has no samples: env:update is not sent.');
     return;
   }
   let i = 0;
@@ -91,7 +93,7 @@ function playEnv(env) {
   setInterval(next, config.envIntervalMs / mock.speed);
 }
 
-/** 데이터를 읽고 이벤트를 보낸다. 모든 모듈의 init이 끝난 뒤에 부른다. */
+/** Reads the data and sends the events. Call it after every module's init is done. */
 export async function loadData() {
   let data;
   if (mock.data) {
@@ -102,6 +104,12 @@ export async function loadData() {
     data = await loadReal();
   }
   const { layerSet, grids, traverse, env } = data;
+  // A destination close to the base, next to the two the data brings (core/waypoints.js).
+  if (config.nearbyM > 0 && !layerSet.waypoints?.some((w) => w.id === 'near')) {
+    const near = nearbyWaypoint(layerSet, config.nearbyM, grids.slope);
+    if (near) layerSet.waypoints.push(near);
+    else console.warn('[loader] no usable cell for the nearby destination at', config.nearbyM, 'm');
+  }
   bus.emit('layers:ready', { layerSet, grids, traverse });
   playEnv(env);
   return data;

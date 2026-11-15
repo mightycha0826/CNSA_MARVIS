@@ -1,12 +1,12 @@
-// 이벤트 버스. 모듈끼리는 이 버스로만 대화한다 (README 9장 규칙 2).
-// 이벤트 이름과 payload 형식은 docs/INTERFACES.md 3장이 계약이다.
+// Event bus. Modules talk to each other only over this bus (docs/DEVELOPMENT.md section 2, rule 2).
+// Section 3 of docs/INTERFACES.md is the contract for the event names and payload formats.
 //
 //   import { bus } from '../core/bus.js';
 //   bus.emit('layer:toggle', { id: 'thermal', visible: true });
 //   const off = bus.on('layer:toggle', ({ id, visible }) => { ... });
-//   off();                       // 또는 bus.off('layer:toggle', handler)
+//   off();                       // or bus.off('layer:toggle', handler)
 //
-// 디버그용으로 bus.on('*', (name, payload) => ...) 를 쓰면 모든 이벤트를 본다.
+// For debugging, bus.on('*', (name, payload) => ...) sees every event.
 
 const handlers = new Map(); // name -> Set<fn>
 
@@ -21,19 +21,19 @@ function off(name, fn) {
 }
 
 function emit(name, payload) {
-  // 받는 쪽 하나가 오류를 내도 나머지는 계속 받는다.
+  // If one listener throws, the others still get the event.
   for (const fn of [...(handlers.get(name) ?? [])]) {
     try {
       fn(payload);
     } catch (err) {
-      console.error(`[bus] '${name}' 처리 중 오류`, err);
+      console.error(`[bus] error while handling '${name}'`, err);
     }
   }
   for (const fn of [...(handlers.get('*') ?? [])]) {
     try {
       fn(name, payload);
     } catch (err) {
-      console.error(`[bus] '*' 처리 중 오류`, err);
+      console.error(`[bus] error while handling '*'`, err);
     }
   }
 }

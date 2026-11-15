@@ -1,26 +1,32 @@
-// 기기 점검 페이지 (check.html). 헤드셋 브라우저에서 열어 WebXR 기능을 확인한다.
-// 앱과 같은 세션 옵션(core/xr.js의 sessionInit)으로 세션을 열어 10초 동안 측정한다.
-// AR 세션 안에서는 HTML이 보이지 않으므로, 세션 중에는 눈앞 패널에, 끝난 뒤에는 표에 결과를 적는다.
+// Device check page (check.html). Open it in the headset's browser to see which WebXR features work.
+// It opens a session with the app's own session options (sessionInit in core/xr.js) and measures for 10 seconds.
+// HTML is not seen inside an AR session, so the results go on a panel in front of the eyes during the session and into the table after it.
 
 import * as THREE from 'three';
-import { OPTIONAL_FEATURES, sessionInit, readEnabledFeatures } from './core/xr.js';
+import { optionalFeatures, sessionInit, readEnabledFeatures } from './core/xr.js';
+import { isOff } from './core/params.js';
+
+// The check asks for live depth as the field map does (it is what that mode starts with);
+// ?depth=0 leaves it out, as it does in the app.
+const WITH_DEPTH = !isOff('depth');
+const OPTIONAL_FEATURES = optionalFeatures(WITH_DEPTH);
 
 const MEASURE_MS = 10000;
 
-// 상태: ok(됨) / no(안 됨) / unk(아직 모름)
+// State: ok (works) / no (does not) / unk (not known yet)
 const rows = [
-  ['secure', '보안 연결 (HTTPS)'],
+  ['secure', 'Secure connection (HTTPS)'],
   ['xr', 'navigator.xr'],
-  ['ar', 'immersive-ar 지원'],
-  ['session', 'AR 세션 시작'],
-  ...OPTIONAL_FEATURES.map((f) => [`f:${f}`, `허용: ${f}`]),
-  ['hands', '손 입력 감지'],
-  ['depth', '깊이 정보 수신'],
-  ['meshes', '감지된 메쉬 수'],
-  ['planes', '감지된 평면 수'],
-  ['mic', '마이크 권한 (getUserMedia)'],
+  ['ar', 'immersive-ar support'],
+  ['session', 'AR session start'],
+  ...OPTIONAL_FEATURES.map((f) => [`f:${f}`, `Granted: ${f}`]),
+  ['hands', 'Hand input detected'],
+  ['depth', 'Depth data received'],
+  ['meshes', 'Meshes detected'],
+  ['planes', 'Planes detected'],
+  ['mic', 'Microphone permission (getUserMedia)'],
 ];
-const result = Object.fromEntries(rows.map(([k]) => [k, { s: 'unk', v: '미확인', d: '' }]));
+const result = Object.fromEntries(rows.map(([k]) => [k, { s: 'unk', v: 'not checked', d: '' }]));
 const set = (k, s, v, d = '') => {
   result[k] = { s, v, d };
   render();
@@ -38,36 +44,36 @@ function render() {
 
 function asText() {
   const lines = rows.map(([k, label]) => `${MARK[result[k].s]} ${label}: ${result[k].v}${result[k].d ? ` (${result[k].d})` : ''}`);
-  return [`[기기 점검] ${new Date().toLocaleString('ko-KR')}`, navigator.userAgent, ...lines].join('\n');
+  return [`[Device check] ${new Date().toLocaleString('en-GB')}`, navigator.userAgent, ...lines].join('\n');
 }
 
-// ---- 세션 밖에서 알 수 있는 것 ----
-set('secure', window.isSecureContext ? 'ok' : 'no', window.isSecureContext ? '예' : '아니오', location.origin);
+// ---- what can be known outside a session ----
+set('secure', window.isSecureContext ? 'ok' : 'no', window.isSecureContext ? 'yes' : 'no', location.origin);
 const startBtn = document.getElementById('start');
 if (!navigator.xr) {
-  set('xr', 'no', '없음', window.isSecureContext ? '이 브라우저는 WebXR을 지원하지 않음' : 'HTTPS나 localhost로 열어야 함');
-  set('ar', 'no', '확인 불가');
+  set('xr', 'no', 'missing', window.isSecureContext ? 'this browser does not support WebXR' : 'open the page over HTTPS or on localhost');
+  set('ar', 'no', 'cannot check');
 } else {
-  set('xr', 'ok', '있음');
+  set('xr', 'ok', 'present');
   navigator.xr.isSessionSupported('immersive-ar').then(
     (ok) => {
-      set('ar', ok ? 'ok' : 'no', ok ? '지원' : '미지원');
+      set('ar', ok ? 'ok' : 'no', ok ? 'supported' : 'not supported');
       startBtn.disabled = !ok;
     },
-    (err) => set('ar', 'no', '오류', err.message),
+    (err) => set('ar', 'no', 'error', err.message),
   );
 }
 
-// ---- 마이크 ----
+// ---- microphone ----
 document.getElementById('mic').addEventListener('click', async () => {
-  if (!navigator.mediaDevices?.getUserMedia) return set('mic', 'no', 'getUserMedia 없음');
+  if (!navigator.mediaDevices?.getUserMedia) return set('mic', 'no', 'no getUserMedia');
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     const st = stream.getAudioTracks()[0]?.getSettings?.() ?? {};
-    set('mic', 'ok', '허용됨', `sampleRate ${st.sampleRate ?? '?'}, channelCount ${st.channelCount ?? '?'}`);
+    set('mic', 'ok', 'granted', `sampleRate ${st.sampleRate ?? '?'}, channelCount ${st.channelCount ?? '?'}`);
     stream.getTracks().forEach((t) => t.stop());
   } catch (err) {
-    set('mic', 'no', '거부 또는 실패', `${err.name}: ${err.message}`);
+    set('mic', 'no', 'denied or failed', `${err.name}: ${err.message}`);
   }
 });
 
@@ -77,11 +83,11 @@ document.getElementById('copy').addEventListener('click', async () => {
   try {
     await navigator.clipboard.writeText(text);
   } catch {
-    /* 복사가 막히면 아래에 보이는 글자를 직접 고른다 */
+    /* if copying is blocked, select the text shown below by hand */
   }
 });
 
-// ---- AR 세션 ----
+// ---- AR session ----
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.xr.enabled = true;
 renderer.xr.setReferenceSpaceType('local-floor');
@@ -89,7 +95,7 @@ document.getElementById('app').appendChild(renderer.domElement);
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(60, 1, 0.05, 50);
 
-// 세션 중 눈앞 1.2m에 띄우는 결과 패널
+// The results panel shown 1.2 m in front of the eyes during the session
 const panelCanvas = document.createElement('canvas');
 panelCanvas.width = 1024;
 panelCanvas.height = 1024;
@@ -118,7 +124,7 @@ function readDepth(frame, refSpace, session) {
   if (!pose) return null;
   for (const view of pose.views) {
     let info = null;
-    // cpu-optimized는 XRFrame에서, gpu-optimized는 XRWebGLBinding에서 받는다.
+    // cpu-optimized comes from the XRFrame, gpu-optimized from the XRWebGLBinding.
     if (session.depthUsage !== 'gpu-optimized' && frame.getDepthInformation) {
       info = frame.getDepthInformation(view);
     } else {
@@ -133,19 +139,19 @@ startBtn.addEventListener('click', async () => {
   startBtn.disabled = true;
   let session;
   try {
-    session = await navigator.xr.requestSession('immersive-ar', sessionInit());
+    session = await navigator.xr.requestSession('immersive-ar', sessionInit(WITH_DEPTH));
     await renderer.xr.setSession(session);
   } catch (err) {
-    set('session', 'no', '실패', `${err.name}: ${err.message}`);
+    set('session', 'no', 'failed', `${err.name}: ${err.message}`);
     startBtn.disabled = false;
     return;
   }
-  set('session', 'ok', '시작됨');
+  set('session', 'ok', 'started');
 
   const enabled = readEnabledFeatures(session);
   for (const f of OPTIONAL_FEATURES) {
-    if (!enabled) set(`f:${f}`, 'unk', '알 수 없음', 'session.enabledFeatures 없음');
-    else set(`f:${f}`, enabled.includes(f) ? 'ok' : 'no', enabled.includes(f) ? '허용' : '거부');
+    if (!enabled) set(`f:${f}`, 'unk', 'unknown', 'no session.enabledFeatures');
+    else set(`f:${f}`, enabled.includes(f) ? 'ok' : 'no', enabled.includes(f) ? 'granted' : 'refused');
   }
 
   const m = { hands: 0, handJoints: 0, depthFrames: 0, depthSize: '', depthErr: '', meshes: 0, planes: 0, meshApi: false, planeApi: false, frames: 0 };
@@ -171,8 +177,8 @@ startBtn.addEventListener('click', async () => {
       if (info) {
         m.depthFrames++;
         m.depthSize = `${info.width ?? info.texture?.width ?? '?'}×${info.height ?? info.texture?.height ?? '?'}`;
-        // 스캔(scan/depth.js)이 깊이 값을 미터로 바꿀 때 쓰는 값들. 표의 설명 칸에 적는다.
-        m.depthInfo = `near ${info.depthNear}, far ${info.depthFar}, rawValueToMeters ${info.rawValueToMeters}, 자체 시점 ${info.projectionMatrix ? '있음' : '없음'}`;
+        // The values the scan (scan/depth.js) uses to turn depth values into metres. They go in the table's notes column.
+        m.depthInfo = `near ${info.depthNear}, far ${info.depthFar}, rawValueToMeters ${info.rawValueToMeters}, own view ${info.projectionMatrix ? 'yes' : 'no'}`;
       }
     } catch (err) {
       m.depthErr = `${err.name}: ${err.message}`;
@@ -191,13 +197,13 @@ startBtn.addEventListener('click', async () => {
     if (time - lastPanel > 300) {
       lastPanel = time;
       drawPanel([
-        [`기기 점검 중… ${Math.ceil(left / 1000)}초`, null],
-        ['방을 둘러보고 두 손을 드세요', null],
-        [`손: ${m.hands}개 (관절 ${m.handJoints ? '수신' : '없음'})`, m.handJoints ? 'ok' : 'unk'],
-        [`깊이: ${m.depthFrames}프레임 ${m.depthSize}`, m.depthFrames ? 'ok' : 'unk'],
-        [`메쉬: ${m.meshApi ? m.meshes : 'API 없음'}`, m.meshes ? 'ok' : 'unk'],
-        [`평면: ${m.planeApi ? m.planes : 'API 없음'}`, m.planes ? 'ok' : 'unk'],
-        [`허용: ${enabled ? enabled.filter((f) => OPTIONAL_FEATURES.includes(f)).join(', ') || '없음' : '알 수 없음'}`.slice(0, 44), null],
+        [`Checking the device… ${Math.ceil(left / 1000)} s`, null],
+        ['Look around the room, raise both hands', null],
+        [`Hands: ${m.hands} (joints ${m.handJoints ? 'received' : 'none'})`, m.handJoints ? 'ok' : 'unk'],
+        [`Depth: ${m.depthFrames} frames ${m.depthSize}`, m.depthFrames ? 'ok' : 'unk'],
+        [`Meshes: ${m.meshApi ? m.meshes : 'no API'}`, m.meshes ? 'ok' : 'unk'],
+        [`Planes: ${m.planeApi ? m.planes : 'no API'}`, m.planes ? 'ok' : 'unk'],
+        [`Granted: ${enabled ? enabled.filter((f) => OPTIONAL_FEATURES.includes(f)).join(', ') || 'none' : 'unknown'}`.slice(0, 44), null],
       ]);
     }
     renderer.render(scene, camera);
@@ -207,22 +213,22 @@ startBtn.addEventListener('click', async () => {
   session.addEventListener('end', () => {
     renderer.setAnimationLoop(null);
     startBtn.disabled = false;
-    if (m.handJoints) set('hands', 'ok', `${m.hands}개, 관절 수신`);
-    else if (m.hands) set('hands', 'unk', `${m.hands}개, 관절 위치 없음`, '손은 잡혔지만 관절 자세를 받지 못함');
-    else set('hands', 'no', '감지 안 됨', '손을 들었는데도 0이면 손 추적이 꺼져 있거나 컨트롤러를 쥐고 있음');
+    if (m.handJoints) set('hands', 'ok', `${m.hands}, joints received`);
+    else if (m.hands) set('hands', 'unk', `${m.hands}, no joint positions`, 'the hands were found but no joint poses came');
+    else set('hands', 'no', 'not detected', 'if it is 0 with the hands raised, hand tracking is off or the controllers are held');
 
-    // depth-sensing이 없는 세션에서는 depthUsage를 읽기만 해도 오류가 난다 (주소에 ?depth=1 이 없을 때).
-    let usage = 'depth-sensing 없음. 주소에 ?depth=1 을 붙이면 요청한다';
+    // In a session without depth-sensing even reading depthUsage throws (?depth=0, or the device refused it).
+    let usage = WITH_DEPTH ? 'depth-sensing was asked for and not granted' : 'depth-sensing not asked for (?depth=0)';
     try {
       usage = `usage ${session.depthUsage}, format ${session.depthDataFormat}, ${m.depthInfo ?? ''}`;
     } catch {
-      /* 위의 안내 문구를 그대로 쓴다 */
+      /* the note set above is used as it is */
     }
-    if (m.depthFrames) set('depth', 'ok', `${m.depthFrames}프레임, ${m.depthSize}`, usage);
-    else set('depth', 'no', '수신 안 됨', usage.startsWith('usage') ? m.depthErr || usage : usage);
+    if (m.depthFrames) set('depth', 'ok', `${m.depthFrames} frames, ${m.depthSize}`, usage);
+    else set('depth', 'no', 'not received', usage.startsWith('usage') ? m.depthErr || usage : usage);
 
-    set('meshes', m.meshes ? 'ok' : 'no', m.meshApi ? `${m.meshes}개` : 'API 없음', m.meshApi && !m.meshes ? '방 설정(공간 스캔)이 안 돼 있으면 0' : '');
-    set('planes', m.planes ? 'ok' : 'no', m.planeApi ? `${m.planes}개` : 'API 없음', m.planeApi && !m.planes ? '방 설정(공간 스캔)이 안 돼 있으면 0' : '');
+    set('meshes', m.meshes ? 'ok' : 'no', m.meshApi ? `${m.meshes}` : 'no API', m.meshApi && !m.meshes ? '0 if room setup (the space scan) has not been done' : '');
+    set('planes', m.planes ? 'ok' : 'no', m.planeApi ? `${m.planes}` : 'no API', m.planeApi && !m.planes ? '0 if room setup (the space scan) has not been done' : '');
     document.getElementById('raw').textContent = asText();
   });
 });

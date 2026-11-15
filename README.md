@@ -1,313 +1,114 @@
-# Marswalk Visor (working title)
+# Project Marvis
 
-**A three-layer map on a Mars explorer's helmet.**
-An entry for the 2026 NASA Space Apps Challenge — *Interplanetary Survival Guide: Martian Map*.
+**A layered Mars map on an explorer's helmet.**
+An entry for the 2026 NASA Space Apps Challenge, *Interplanetary Survival Guide: Martian Map* ([challenge text](docs/CHALLENGE.md)).
 
-> A helmet HUD that builds the map and the route from NASA data, fills in nearby obstacles with the helmet's sensors, and changes the route when the suit's condition becomes dangerous.
+Project Marvis is a helmet heads-up display for an astronaut walking on Mars. It layers data from four NASA Mars missions into one map of a single walkable site, plans a route across it that a person in a spacesuit could walk, fills in the nearby obstacles that orbital data cannot show with the helmet's own depth sensor, and keeps the suit's readings and alerts in view. It is operated by hand gestures and voice, because gloved hands cannot press buttons. A Meta Quest 3 stands in for the helmet, an NVIDIA Jetson for the suit's computer and an Arduino temperature sensor for a sensor on the suit.
 
-**This project is built on NASA data.** The map, the route, the status panel and the alerts all start from NASA mission data. The headset, the Jetson and the Arduino are the means of delivering that data to the explorer.
+**Demo video:** [docs/demo/marswalk-visor-demo.mp4](docs/demo/marswalk-visor-demo.mp4), a screen recording of the app in use (1 min 17 s).
 
-| Document | Who reads it | Contents |
-|---|---|---|
-| This README | Whole team | What we build and why, schedule, rules |
-| [docs/ROLES.md](docs/ROLES.md) | Each owner | The six roles, done criteria, expected AI token use |
-| [docs/INTERFACES.md](docs/INTERFACES.md) | Owners and their AIs | Data formats exchanged between modules |
-| [docs/RESOURCES.md](docs/RESOURCES.md) | Whole team, especially C | Analysis of the published resources, data to use and addresses |
-| [docs/CHALLENGE.md](docs/CHALLENGE.md) | Whole team | Full challenge text |
+![The four map layers of the site: optical, terrain shading, slope and night thermal, with Curiosity's path](docs/figures/layers.png)
 
----
+*The four map layers over the same 2 km × 2 km of Gediz Vallis channel, with the path Curiosity drove. A plot of NASA data drawn by our script.*
 
-## 1. What we build
+The project was called Marswalk Visor, then MARVIS. Names in the code keep the older names: the Python package `marswalk`, the `MARSWALK` hotspot, the "Start MARVIS" launcher, file names such as `marswalk-visor-demo.mp4`, and the line under the two figures.
 
-A Meta Quest 3 stands in for the spacesuit helmet, and we build the map a Mars explorer sees while walking. The map has three layers.
+## Mission scenario
 
-| Layer | What it shows | Data | Hardware |
-|---|---|---|---|
-| 1. Orbital map | 3D map of the exploration site with terrain, optical and thermal data overlaid | **NASA orbiter data** (MRO, Mars Odyssey, MGS) | Quest 3 (palm map) |
-| 2. Field map | Nearby obstacles that orbital data cannot see | Helmet depth sensor laid over the NASA map | Quest 3 (real-time environment analysis) |
-| 3. Survival info | Radiation, suit temperature, emergency alerts | **NASA Curiosity observations** + temperature sensor | Jetson + Arduino |
+The site is Gediz Vallis channel on Mount Sharp, Gale Crater: a 2,048 m × 2,048 m square centered on 137.4075° E, 4.7868° S. On May 30, 2024 (sol 4200) Curiosity cracked a rock open here and found pure sulfur, a first on Mars, and it is not yet known why it formed here. The premise is that a crew returns on foot to survey the sulfur field more widely.
 
-Control is by palm gesture and voice only. The premise is that pressing a screen is hard with spacesuit gloves.
+- **Survey site:** where Curiosity ended its drive that day, 137.4089° E, 4.7857° S.
+- **Base:** where Curiosity stood on sol 4098, 358 m away in a straight line and 45 m lower. Curiosity drove 593 m between the two, so the planned route can be compared with a path a real vehicle took.
 
-### Principle: every feature starts from NASA data
+## What it does
 
-For every feature we must be able to answer "which NASA data does this value on screen come from?" A feature that cannot answer is postponed.
+The start page offers two modes, **Mars map** and **Field map**.
 
-| Feature | NASA data behind it |
-|---|---|
-| Palm 3D map | Terrain (MRO HiRISE and others), optical (MRO HiRISE), thermal (Mars Odyssey THEMIS) |
-| Route guidance | Slope computed from terrain. Shown next to the path Curiosity actually drove, as validation |
-| Status panel | Radiation observed by Curiosity RAD, elevation and geologic unit of the current position |
-| Emergency mode | Alert based on observed radiation (together with the suit temperature alert) |
-| Voice guidance | Reads the values above aloud |
-| Rover point-of-view photo | Real photos Curiosity took at that spot |
-| Real-time environment analysis | Corrects the route built from NASA data to fit nearby obstacles |
+- **Mars map on the palm.** Turning the left palm up brings up a 3D relief of the site, to scale. It shows one of four layers (elevation, slope, optical image, night thermal image), with the path Curiosity drove, the base and the survey site drawn on it.
+- **Route planner for a walker in a suit.** Routes come from the slope layer: ground gets more expensive past 15° and is closed above 20°. The route from base to the survey site is 390 m long, climbs 45 m and never crosses ground steeper than 14.9°. It is drawn on the map and laid on the real floor as arrows. On a critical alert it leads back to base.
+- **Field map with a live obstacle scan.** The second mode shows the ground around the wearer, 24 m across. The headset's room geometry and live depth image become a floor grid of 10 cm cells: clear floor, obstacles, drops. The route to a target goes around the obstacles, and walking into marked ground raises a warning. The map is kept on the Jetson for the next session. In the demo a room plays the Martian ground: the scan stands for the rocks and ledges that orbital data cannot show.
+- **Targets and waypoints.** Pointing at the map and pinching picks a place, which becomes the target of the route or a waypoint. A waypoint can be named by voice.
+- **HUD with vitals and alerts.** Readings stand as tiles beside the line of sight: battery, oxygen and ambient temperature always, and whatever else matters most at the moment. An open right palm shows a figure of the wearer with the vitals around it. An alert brings up a card, beeps and lights the view in orange or red. Alerts exist for the ambient temperature (30 °C and 35 °C), for radiation well above what Curiosity measured here, and for a lost link to the hub.
+- **Menus without touching.** The back of the left hand, turned up as when looking at a watch, brings up a card of commands. The right hand points at it and pinches.
+- **Voice commands through the Jetson hub.** Short English commands such as "Navigate", "Base", "Mark waypoint", "Thermal", "Status". Speech is recognized and answered on the Jetson with no internet connection. What was heard is matched against a table of phrases the team wrote, not by a language model.
+- **Suit temperature sensor.** An Arduino sends one reading a second to the hub, which decides when an alert starts and clears. It measures the air around the wearer, so the app calls it the ambient temperature.
+- **Rescue signal.** The red SOS bar on the command card, or saying "SOS", arms it; "Confirm" sends it. The hub raises an alert on every other headset and on the monitor page. The crew is simulated: the hub acknowledges in its name after five seconds and says so.
+- **Monitor page.** A page served by the hub shows the wearer's whole view live, with no Meta account and no developer mode, and records it with the voices as MKV and MP4.
 
-Where each dataset comes from is in [docs/RESOURCES.md](docs/RESOURCES.md).
+**Measured and simulated.** The battery is the headset's own and the ambient temperature comes from the sensor. Radiation, air pressure and air temperature are Curiosity's record of one Martian day, replayed. Oxygen, heart rate, suit pressure and body temperature are simulated and marked "sim". The photos Curiosity took at the base and at the survey site are prepared in the data (`pov.json`), but the app does not show them yet.
 
-Only two inputs are not NASA data: the helmet depth sensor and the suit temperature sensor. Both operate only on top of the map and route built from NASA data.
+How each part behaves in the hand, with the switches that can be put after the address, is in [docs/USAGE.md](docs/USAGE.md).
 
-### Real-time environment analysis is the kick of the demo
+## NASA data
 
-A map of NASA data alone is just a picture on a screen. Real-time environment analysis shows that map **alive in real space**. The moment an obstacle is placed in the demo, the route computed from NASA data is redrawn before your eyes.
+The map, the route, the radiation and weather readings and the radiation alert start from NASA mission data. Not NASA data: the headset's own sensors (tracking, depth, battery) with the field map made from them, the temperature sensor with its alerts, and the simulated vitals, which are marked "sim". They act on top of the map and the route.
 
-- NASA data is the protagonist; real-time environment analysis makes it stand out.
-- It ties to the challenge text, which says existing tools are "built for regional and global views rather than the hyperlocalized areas astronauts will target". The helmet sensor fills the very short range where orbital data is weak.
-- The real data backs this up. Across our map extent (2 km) the thermal image is only 25 pixels wide, and even the sharpest optical image is about 0.64 m per pixel ([docs/RESOURCES.md](docs/RESOURCES.md) section 4). A rock at your feet is invisible from orbit.
+| Layer | Kind | Mission · instrument | Source | What it became in the app |
+|---|---|---|---|---|
+| Terrain elevation | topographic | MRO HiRISE·CTX, Mars Express HRSC, MGS MOLA | [USGS Gale 1m DEM](https://astrogeology.usgs.gov/search/map/mars_msl_gale_merged_dem_1m) | An elevation grid of 512 × 512 cells of 4 m; the relief of the palm map is drawn from it with a vertex every 8 m |
+| Slope | derived | Same as above | Computed from terrain | Map layer; the cost of the route planner |
+| Optical image | optical | MRO · HiRISE | [Mars Trek](https://trek.nasa.gov/mars/) | Map layer: 182 tiles joined, about 0.64 m per pixel |
+| Thermal image (night) | thermal | Mars Odyssey · THEMIS | [Mars Trek](https://trek.nasa.gov/mars/) | Map layer, shown as coarse as it is: about 81 m per pixel, 25 pixels across the map |
+| Rover traverse record | ground truth | MSL Curiosity | [NASA traverse record](https://mars.nasa.gov/mmgis-maps/MSL/Layers/json/MSL_waypoints.json) | Curiosity's path on the map (178 stops); the check of elevation, slope and route |
+| Radiation | radiation | MSL Curiosity · RAD | [PDS](https://pds-ppi.igpp.ucla.edu/data/MSL-M-RAD-3-RDR-V1.0/) | Radiation reading and alert: sol 4200, 154 µGy/day on average |
+| Air pressure and temperature | atmospheric | MSL Curiosity · REMS | [PDS](https://atmos.nmsu.edu/PDS/data/mslrem_1001/) | Readings: sol 4200, 800–889 Pa and 206–268 K |
+| Rover point-of-view photos | optical (ground) | MSL Curiosity · Navcam | NASA raw images | Prepared in the data; not shown in the app yet |
+| Geologic unit | geologic | USGS SIM 3292 | [Mars Trek](https://trek.nasa.gov/mars/) | Kept in the map data (`Htu`). The whole site is one unit, and the HUD does not show it |
 
-### Mission scenario
+Four NASA missions are involved: MRO, Mars Odyssey, MGS and MSL Curiosity. The USGS terrain file also includes data from ESA's Mars Express (HRSC).
 
-Survey sulfur-bearing rocks in the **Gediz Vallis channel** on Mount Sharp, Gale Crater, and return to base.
+**How the data was checked.**
 
-- **Survey site (sulfur stone field)**: 137.4089° E, 4.7857° S. Where Curiosity ended its drive on May 30, 2024 (sol 4200), the drive on which it cracked open a rock and found pure sulfur. It is about 102 m from the center of the map (the sol 4312 position, 137.4075° E, 4.7868° S). Evidence is in [docs/DATA.md](docs/DATA.md) section 2.
-- **Base**: where Curiosity stood on sol 4098. 358 m from the survey site in a straight line and 45 m lower.
-- **Science goal**: Curiosity found rocks of pure sulfur here, a first on Mars, and it is not yet known why they formed here ([JPL 2024-07-18](https://www.jpl.nasa.gov/news/nasas-curiosity-rover-discovers-a-surprise-in-a-martian-rock/), [JPL 2024-11-18](https://www.jpl.nasa.gov/news/nasas-curiosity-mars-rover-takes-a-last-look-at-mysterious-sulfur/), both read in full). The premise is that a human goes there to survey more widely.
-- **Map extent**: 2,048 m × 2,048 m centered on 137.4075° E, 4.7868° S.
-- **Reference path**: Curiosity drove 593 m and climbed 45 m from the base position to the survey site (sol 4098 → 4200).
-- **Why this site**: it does not overlap the boxwork example in the challenge text, and being on the same Mount Sharp it lets us use terrain, optical, radiation and rover photos.
+- **Against Curiosity's own record:** at the 178 rover stops the terrain elevation differs from the elevation the rover recorded by −0.17 m on average, and the slope layer is off by 1.9° on average from the tilt the rover measured.
+- **Terrain against optical image:** shading computed from the terrain matches the optical image best at a shift within one cell (4 m). The match is weak (correlation 0.29), so this says only that the two are not off by much more than 4 m.
+- **The route:** as a separate check, the data scripts compute a route with the same rule as the app's planner. It also comes to 390 m and stays 16 m on average, and 43 m at most, from the path Curiosity drove between the same two points.
 
-The evidence for coordinates and figures is in [docs/DATA.md](docs/DATA.md) and [docs/RESOURCES.md](docs/RESOURCES.md) sections 4 and 7.
+![Route check: the route the data scripts compute from the slope layer beside the path Curiosity drove](docs/figures/route.png)
 
-### Demo flow (the one minute shown to the judges)
+*Yellow: the route the data scripts compute from the slope layer (390 m). Cyan: the path Curiosity drove, 518 m when its stops are joined with straight lines (593 m by its odometry). A plot of NASA data drawn by our script.*
 
-> **Check against the submission rules.** The official guide says the submitted demo is **a video of 30 seconds or less, or a deck of 7 slides or fewer**; anything longer is not eligible for Global Judging. No image, video or voice of anyone under 18 may appear. The flow below has to be cut to fit 30 seconds. All the rules are at the top of [docs/SUBMISSION.md](docs/SUBMISSION.md).
+**Limits.** The optical and thermal sources are grayscale, and thermal brightness is relative, not a temperature. The radiation and weather values are a recording of one Martian day, not a live feed. We found no spectral data at walking scale for this site. The slope limits of 15° and 20° come from the Moon (Apollo walking experience, Artemis walking plans); we found no figure for Mars.
 
-1. Raise the left palm and the Gediz Vallis 3D map appears. Switch layers.
-2. Say "Take me to the survey site" and arrows are laid on the floor.
-3. **(Kick)** While walking, meet a chair (playing a rock) and the route is recalculated.
-4. Warm the temperature sensor by hand: the screen flashes red and the route changes to the return-to-base route.
+What each file is, how it was made and how far it can be trusted is in [docs/DATA.md](docs/DATA.md). Where the source data is and what we found at each of the challenge's resources is in [docs/RESOURCES.md](docs/RESOURCES.md).
 
-The demo space (a room) stands in for a scaled-down part of the Martian surface. We state this first in the presentation.
-
----
-
-## 2. What the challenge asks for
-
-All quotations below are taken verbatim from [docs/CHALLENGE.md](docs/CHALLENGE.md).
-
-| # | Challenge text | In our entry |
-|---|---|---|
-| Q1 | "create a layered, integrated view of a location or route on the Martian surface that pulls together data from multiple NASA science missions" | **Core task.** Layer 1, orbital map |
-| Q2 | "create a map, tool, or interface a Mars astronaut could use during a surface exploration mission, using NASA data and tools" | **Core task.** The whole HUD |
-| Q3 | "You might start by identifying some scientific goals for your mission and the location the astronaut will explore" | Mission scenario |
-| Q4 | "You may consider including at least three kinds of data—optical, thermal, spectral, topographic, geophysical, atmospheric, radiation, and chemical are a few examples" | Three or more layer kinds |
-| Q5 | "they are built for regional and global views rather than the hyperlocalized areas astronauts will target" | Layer 2, field map (our differentiator) |
-| Q6 | "NASA’s first priority is always astronaut safety" | Layer 3, survival info, emergency mode |
-| Q7 | "include a route map that shows where the astronaut will travel to accomplish their scientific objectives while avoiding significant obstacles such as large rock formations" | Route guidance |
-| Q8 | "as a heads-up-display (HUD) projected on the spacesuit’s helmet visor" | HUD format (allowed by the text) |
-| Q9 | "Consider how you might include these point-of-view images as part of your map" | Rover point-of-view photos (if time allows) |
-| Q10 | "Astronauts will conduct Mars surface science wearing spacesuits and possibly carrying scientific equipment and other supplies. Consider how this might impact their mobility" | Palm and voice control (our interpretation) |
-
-**Our approach**
-
-- The core of the text is Q1 and Q2: **a map that layers data from several NASA missions**. This is the foundation of the entry, and a dedicated role (C) builds it first.
-- Real-time environment analysis ties to Q5 and Q7. It is **a layer that puts nearby obstacles on top of the NASA data map**, and the kick that shows the map reacting to real space in the demo.
-
----
-
-## 3. Features and priorities
-
-The hackathon is 48 hours. We grade features and finish from the top.
-
-- **P0**: cannot submit without it
-- **P1**: makes the entry stand out
-- **P2**: only if time remains
-
-| Feature | Basis | Grade | Owner |
-|---|---|---|---|
-| NASA data layers (three or more kinds) | Q1, Q2, Q4 | P0 | C |
-| Palm 3D map, layer switching | Q1, Q8 | P0 | D, F |
-| Route guidance (obstacle-avoiding route, floor arrows) | Q7 | P0 | D |
-| Curiosity's actual traverse shown (route validation) | Q1, Q7 | P0 | C, D |
-| Status panel (radiation, elevation, suit temperature) | Q6 | P0 | F, E |
-| Emergency mode (red flashing screen) | Q6 | P0 | F, E |
-| Real-time environment analysis (field obstacle layer, the demo kick) | Q5, Q7 | P1 | A |
-| Voice commands (STT) and voice guidance (TTS) | Q10 | P1 | E |
-| Rover point-of-view photos (real Curiosity photos) | Q9 | P1 | F, C |
-| Night vision | No basis in the text | P2 | A, F |
-| Video recording mode | No basis in the text | P2 | F |
-
-Why night vision and recording are P2: users report that the Quest browser denies the feature that lets a WebXR session access passthrough camera frames (`camera-access`) ([Meta community forum](https://communityforums.atmeta.com/discussions/Questions_Discussions/request-webxr-raw-camera-access-camera-access-feature-in-quest-browser/1367463), confirmed by search summary, needs checking on the device). Filtering or recording the video directly may not be possible.
-
----
-
-## 4. System architecture
+## How it is built
 
 ```
 [NASA data] --preprocessed on a PC--> layer files (height grid, images, JSON) --+
                                                                                 v
 [Arduino temperature sensor] --USB serial--> [Jetson Orin Nano Super] <--WebSocket--> [Quest 3 browser (WebXR app)]
-                                              - sensor reading, hazard decision        - layered map, route, HUD
-                                              - speech recognition -> intent -> speech  - field obstacle scan
-                                              - web app serving (HTTPS)                 - microphone in, audio out
+                                              - sensor reading, alert decision         - layered map, route, HUD
+                                              - speech recognition -> command -> speech - field obstacle scan
+                                              - web app serving (HTTPS), monitor page   - microphone in, audio out
 ```
 
-- **Web app**: Three.js + WebXR, built with Vite. Modules talk only through a shared event bus. Formats are in [docs/INTERFACES.md](docs/INTERFACES.md).
-- **NASA data**: preprocessed on a PC during the hackathon and shipped as static files. The headset does not download source data in real time.
-- **Mock mode**: every module must run alone on fake data. You can develop in a PC browser without the headset or the Jetson.
+- **Headset web app** (`web/`): Three.js and WebXR, built with Vite. Its modules talk only through a shared event bus, so each also runs alone on mock data in a PC browser.
+- **Jetson hub** (`jetson/`): one Python server on the Jetson's own Wi-Fi hotspot. It serves the app over HTTPS, reads the sensor, decides the alerts, handles voice, keeps the field maps and the waypoints, and serves the monitor page.
+- **Arduino** (`arduino/`): prints one temperature reading a second over USB serial.
+- **Data pipeline** (`data-pipeline/`): Python scripts that download the NASA sources, put them on one grid and run 56 checks on the result. The headset loads the prepared files; it downloads no source data while in use.
 
-### Repository layout
+The formats the parts exchange are in [docs/INTERFACES.md](docs/INTERFACES.md).
 
 ```
 web/                 web app (Vite + Three.js)
-  src/core/          B  XR session, event bus, Jetson link
-  src/scan/          A  field obstacle scan
-  src/map/           D  palm map, layer display
-  src/nav/           D  path finding, floor arrows
-  src/hud/           F  status panel, emergency mode, layer switching UI
-  src/mock/          B  mock data (everyone adds their own)
-  public/data/       C  processed layer files
-data-pipeline/       C  NASA data processing scripts (Python)
-jetson/              E  hub server, voice, sensor reading
-arduino/             E  temperature sensor firmware
-docs/                documents
+  src/core/          XR session, event bus, link to the hub, mirror for the monitor page
+  src/scan/          field obstacle scan
+  src/map/           palm map, layers
+  src/nav/           route planner on the Mars map
+  src/field/         field map on the palm, guidance on the real floor
+  src/hud/           reading tiles, alerts, hand menus, waypoints, vitals, rescue signal
+  src/mock/          mock data
+  public/data/       processed NASA layer files
+data-pipeline/       NASA data processing and checks (Python)
+jetson/              hub server, voice, sensor reading, monitor page, one click start
+arduino/             temperature sensor firmware
+docs/                documents, figures, demo video
+mockups/, design-system/, artifacts/   HUD design mockup, its design system, the figure used for the vitals
 ```
 
----
+## How to run
 
-## 5. Roles at a glance
-
-Details are in [docs/ROLES.md](docs/ROLES.md), which also lists the owners.
-
-| Slot | Owner | Role | One-line description |
-|---|---|---|---|
-| A | 이효제 | Real-time environment analysis | Builds a map of nearby obstacles from the headset depth sensor |
-| B | 차유근 | XR core · integration lead | Builds the skeleton and merges everyone's code into one |
-| C | 김건민 | NASA data layers · mission scenario | Gets NASA data and processes it into map layers |
-| D | 안현상 | Map · route guidance | Shows the palm map, computes the route and lays the arrows |
-| E | 김도훈 | Jetson hub · voice · sensor | Runs the voice assistant and the temperature sensor on the Jetson |
-| F | 길윤석 | HUD UI · demo | Builds the status panel and the emergency screen, shoots the demo video |
-
----
-
-## 6. 48-hour schedule
-
-The hackathon is on November 14–15 ([spaceappschallenge.org/2026](https://www.spaceappschallenge.org/2026/), confirmed by search summary).
-
-| Time | To do | Done when |
-|---|---|---|
-| 0–3 h | Start the terrain file (3.6 GB) download, fix the interfaces, put up the skeleton | An empty AR screen shows on the headset |
-| 3–24 h | Each module developed (mock mode) | Each module runs alone on fake data |
-| ~12 h | **C hands over one terrain layer first** | Real Martian terrain shows on D's map |
-| 24–36 h | Integration | Demo flow steps 1–4 run end to end on the headset |
-| 36–44 h | Rehearsal, demo video shoot | A video file exists |
-| 44–48 h | Submission | Submitted |
-
-If any P0 item is not done at the 24-hour mark, P1 and P2 work stops and helps P0.
-
----
-
-## 7. Risks and mitigations
-
-| Risk | Mitigation | Owner |
-|---|---|---|
-| If NASA data processing is late the map is empty | Optical tiles can be fetched right away, so hand those over first. Terrain within 12 hours | C |
-| The terrain file and the traverse record may use different elevation references | **Resolved.** They agree: mean difference −0.17 m at 178 rover stops. No correction is used | C |
-| Terrain elevation values exist only in the 3.6 GB file | **Resolved.** The server accepts partial requests; only the map window is read | C |
-| Radiation data is close to raw and may take long to interpret | **Resolved.** Dose rates for sol 4200 are extracted from the RAD file (154 µGy/day on average) | C |
-| Atmospheric (REMS) data could not be verified | **Resolved.** Pressure and air temperature for sol 4200 are in `env.json` | C, F |
-| WebXR only works on HTTPS (or localhost) ([MDN](https://developer.mozilla.org/docs/Web/API/Navigator/xr)) | Confirm the headset can connect within the first 3 hours | B |
-| Depth and mesh data may not come out as expected | Check on the device within the first 3 hours. If not, A falls back to plane detection | A |
-| Hand tracking and microphone input in the browser are unverified | Check on the device within the first 3 hours | D, E |
-| Submission requirements (video, description, deadline) are unknown | **Resolved.** Read from the official guide and summarized at the top of [docs/SUBMISSION.md](docs/SUBMISSION.md). Demo: 30 s video or 7 slides; deadline Nov 15, 11:59 p.m. local | C |
-| Integration piles up at the end | Interface changes only after B approves | B |
-
----
-
-## 8. NASA data
-
-The Resources tab was published and we checked it directly. Detailed analysis and addresses are in [docs/RESOURCES.md](docs/RESOURCES.md).
-
-| Rank | Layer | Kind (Q4) | Mission · instrument | Source |
-|---|---|---|---|---|
-| 1 | Terrain elevation | topographic | MRO HiRISE·CTX, Mars Express HRSC, MGS MOLA | [USGS Gale 1m DEM](https://astrogeology.usgs.gov/search/map/mars_msl_gale_merged_dem_1m) |
-| 2 | Slope | (derived) | Same as above | Computed from terrain |
-| 3 | Optical image | optical | MRO · HiRISE | [Mars Trek](https://trek.nasa.gov/mars/) |
-| 4 | Thermal image (night) | thermal | Mars Odyssey · THEMIS | [Mars Trek](https://trek.nasa.gov/mars/) |
-| 5 | Rover traverse record | (ground truth) | MSL Curiosity | [NASA traverse record](https://mars.nasa.gov/mmgis-maps/MSL/Layers/json/MSL_waypoints.json) |
-| 6 | Rover point-of-view photos | optical (ground) | MSL Curiosity | NASA raw images |
-| 7 | Radiation | radiation | MSL Curiosity · RAD | [PDS](https://pds-ppi.igpp.ucla.edu/data/MSL-M-RAD-3-RDR-V1.0/) |
-| 8 | Air pressure and temperature | atmospheric | MSL Curiosity · REMS | [PDS](https://atmos.nmsu.edu/PDS/data/mslrem_1001/) |
-| 9 | Geologic unit | geologic | USGS SIM 3292 | [Mars Trek](https://trek.nasa.gov/mars/) |
-
-- All of these are processed and in `web/public/data/`. What each file is, how it was made and how far it can be trusted is in [docs/DATA.md](docs/DATA.md).
-- Four different NASA missions are involved (MRO, Mars Odyssey, MGS, MSL Curiosity).
-
-**How the five resources are used**
-
-| Resource | Use |
-|---|---|
-| Mars Trek | Main source of optical and thermal tiles |
-| USGS-NASA Planetary Geologic Mapping Program | Shows the geologic unit of the site |
-| Curiosity route map example | Design reference for the route map |
-| NASA Worldview | Reference for the layer switching screen (an Earth observation tool, not a source of Mars data) |
-| Mars Perseverance Raw Images Gallery | We use Curiosity photos served the same way (Perseverance is in a different crater) |
-
-**Limits to keep in mind**
-
-- Mars Trek terrain tiles are pictures, so no elevation values can be read from them. Elevation comes only from the USGS file.
-- The thermal image is about 81 m per pixel, so 25 pixels across our map extent, and its brightness is relative brightness, not temperature.
-- The optical image is 8-bit grayscale. If we colorize it, we state in the presentation that the source is grayscale.
-- The terrain file and the traverse record share an elevation reference (mean difference −0.17 m at 178 rover stops), and terrain and optical overlap to within 4 m. How this was checked is in [docs/DATA.md](docs/DATA.md) section 6.
-- The radiation and weather values are a recording of one Martian day (sol 4200), not a live feed.
-- The global geologic map shows our whole site as a single unit (`Htu`).
-
-### Missing data: comparison with the five resource sites
-
-A teammate compared this README with the five resource sites and listed data we were not using (2026-11-14, branch `main`). C went through the list the same day. The "Status" column is what C found; items marked "checked" were checked against the live Mars Trek layer index (225 products, 39 covering our site) or against the files in `web/public/data/`.
-
-| ID | Missing item | Source | Status (C, 2026-11-14) |
-|---|---|---|---|
-| M1 | Spectral and mineral data (CRISM, OMEGA) | Mars Trek, Curiosity route page | **Checked: nothing usable at our scale.** Trek's CRISM raster indicators cover other regions, not Gale. What covers our site is global: a map of hydrous mineral detections (OMEGA, CRISM) and TES mineral abundance maps at kilometers per pixel, less than one pixel across our 2 km map. `spectral` stays empty, and we say so |
-| M2 | THEMIS daytime thermal image | Mars Trek | **Checked: available** (`THEMIS_DayIR_ControlledMosaics_100m_v2_oct2018`), not added. Same 81 m per pixel as the night image we use |
-| M3 | MOLA·HRSC global DEM (about 200 m) | Mars Trek, USGS | **Not needed.** It was the fallback if the 3.6 GB file failed; the 1 m terrain is read directly |
-| M4 | CTX optical mosaic (about 5–6 m) | Mars Trek | **Checked: covers our site** (`curiosity_ctx_mosaic`, `Gale_CTX_BlockAdj_dd`), not needed. HiRISE at 0.64 m covers the whole map |
-| M5 | Place names, landing sites, exploration zones, thematic layers | Mars Trek | Global overlays exist (dune fields, exploration zones and others). Not checked for our site |
-| M6 | Curiosity planned route and science regions | Curiosity route page | A single GIF, not data. We use the rover's actual path instead (`traverse.json`) |
-| M7 | Trek subsetting, elevation profile | Mars Trek | **Not needed.** The terrain file accepts partial requests, so only the map window is read |
-| M8 | Trek rock detection | Mars Trek | Not checked. It is a tool, not a layer in the index |
-| M9 | Trek sun angle | Mars Trek | Not checked |
-| M10 | Trek WMTS tile addresses and structure | Mars Trek | **Done.** [docs/RESOURCES.md](docs/RESOURCES.md) section 2 |
-| M11 | Source, metadata and position link of Curiosity photos | NASA raw images API | **Done.** `pov.json`: photos matched to map positions by site and drive number ([docs/DATA.md](docs/DATA.md) section 4) |
-| M12 | Worldview screen features (compare, measure, time slider) | Worldview | UI ideas, not data. For F |
-
-**What the five sites do not have**
-
-- Atmospheric (REMS) and radiation (RAD) data: **done**, both from the Planetary Data System, in `env.json`.
-- Chemical and geophysical data: still empty.
-- A finer geologic map of Mount Sharp or Gale Crater: not found.
-- Coordinates of Curiosity's planned route: not found.
-
-The teammate's list also pointed to a `docs/MISSING_DATA.md` with evidence per item. That file was not in the branch, so it is not linked here.
-
----
-
-## 9. Collaboration rules
-
-1. **Edit only your own folder.** If someone else's folder needs a change, ask its owner.
-2. **Modules talk only through events.** Do not call another module's functions directly.
-3. **Tell B before changing an interface.** Edit [docs/INTERFACES.md](docs/INTERFACES.md) first, then the code.
-4. **Branches**: `feat/<slot>-<topic>` (for example `feat/d-palm-map`). B merges into `main`.
-5. **Push small and often.** At least once every 3 hours.
-6. **Give the AI only what it needs.** `docs/INTERFACES.md` and your own folder are enough and cost fewer tokens.
-
----
-
-## 10. Verification level of this document
-
-- Challenge requirements: quoted from the text the team lead provided ([docs/CHALLENGE.md](docs/CHALLENGE.md)).
-- Addresses, formats, resolutions and coordinates of NASA data: checked by connecting directly (2026-11-13). The level per item is marked in [docs/RESOURCES.md](docs/RESOURCES.md).
-- Submission requirements: read from the official Project Submission Guide (2026-11-14).
-- Radiation (RAD), atmospheric (REMS) data, terrain alignment and the sulfur discovery at Gediz Vallis: checked against the source files and the JPL articles (2026-11-14). Details in [docs/DATA.md](docs/DATA.md) and [docs/RESOURCES.md](docs/RESOURCES.md) section 7.
-- Hackathon schedule and Quest browser capabilities: confirmed only from search result summaries.
-- **Not checked on the headset:** the data files were loaded by the web app in a desktop browser only.
-- Priorities, role split, schedule and expected token use: proposals, not facts. The team can change them.
-
----
-
-## 11. How to run
-
-Node.js 20.19 or later is required (22.12 or later on the 22 line). The web app is in `web/`.
+**On a PC, with mock data.** Node.js 20.19 or later (22.12 or later on the 22 line).
 
 ```bash
 cd web
@@ -315,34 +116,57 @@ npm install
 npm run dev        # https://localhost:5173/ (self-signed certificate)
 ```
 
-**Mock mode on a PC** — every event flows without the headset, the Jetson or real data.
+Open `https://localhost:5173/?mock=1` and get past the certificate warning. Everything is fake in this mode: terrain, hub and obstacle. Keys: `N` navigate, `H` base, `S` stop, `L` thermal / optical map, `T` temperature spike. `?mock=link,hazard` loads the real NASA layer files with a fake hub and a fake obstacle; `&mode=field` opens the field map.
 
-- Open `https://localhost:5173/?mock=1`. Get past the certificate warning with "Advanced → Proceed".
-- The top-left panel shows the events on the bus and their counts. Keyboard: `N` guide, `H` base, `S` stop, `L` thermal map, `T` temperature spike.
-- HUD text is English by default (as in the mockup); add `?lang=ko` for Korean. HUD size, position and flash period are tuned with the numbers in `web/src/hud/config.js`.
-- Parts can be mocked separately: `?mock=link,hazard` (parts: `data`, `link`, `hazard`). `?mockSpeed=10` runs the timeline ten times faster.
-- `?mock=1&mode=field` opens the PC view in field mode, where the fake obstacle is outlined in red on the floor.
+**On the Jetson, with the headset.** After the one-time setup in [jetson/README.md](jetson/README.md), double-click **Start MARVIS** on the Jetson's desktop. It brings up the `MARSWALK` hotspot, starts the hub, opens the monitor page, and opens the app in the headset's browser when the headset is reachable over adb. Otherwise join the hotspot on the headset, open `https://10.42.0.1:8443/` and accept the certificate warning once. Then press **Mars map** or **Field map**. The connection step by step is in [jetson/QUEST_CONNECT.md](jetson/QUEST_CONNECT.md).
 
-**From the headset** — put the PC and the headset on the same Wi-Fi.
+Tests, lint and the build are in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
-1. Enter the `Network: https://<PC address>:5173/` address printed by `npm run dev` in the headset browser.
-2. Get past the certificate warning and press **Start AR** (the button labelled `AR 시작`). Without a Jetson, append `?mock=link` to the address (`?mock=1` also swaps the room scan for a fake chair).
-3. Give the Jetson address with `?jetson=<address>:8443`. The default is port 8443 on the same host as the page. If the Jetson also uses a self-signed certificate, open `https://<Jetson address>:8443/` once in the headset browser and accept the warning, or the WebSocket will not connect.
+## Verification level
 
-**Two ways in** — the start page has two buttons.
+- **NASA data:** 56 automated checks pass, among them the comparisons with Curiosity's record above ([docs/DATA.md](docs/DATA.md), sections 6 and 7). Rebuilding every file from an empty cache gives byte-identical files. What was checked at the source and what was only read in a search summary is marked per item in [docs/RESOURCES.md](docs/RESOURCES.md).
+- **Code:** unit tests in `web/` (225 passed on 2026-11-15, at commit 1055667) and in `jetson/` (28 passed when the code was reorganized on 2026-11-15; not run again for this README).
+- **On the headset:** the app was run on the Quest 3 through the Jetson hub during the hackathon, with hand tracking and live depth. The headset had no stored room geometry in any session, so the field map was built from live depth alone. No record per feature was kept. What was changed late and only run in a PC browser or in tests is marked "Not checked on the headset" in [docs/USAGE.md](docs/USAGE.md): the last range and rate of the depth scan, the hazard warning, drops and steps, the map unfolding over a fist, the finer terrain mesh, keeping the room's coordinates across sessions, and others.
+- **Voice:** measured with synthetic speech only (18 of 18 test sentences, before the command list was shortened), not with real voices.
+- **Temperature sensor:** wired and read by the hub; warming it by hand raised the alerts. The thresholds are starting values.
 
-- **Mars map**: the NASA terrain on the left palm, layers, the route between base and survey site. Walking moves your marker on the map (one real metre counts as 100 m by default, `?walkScale=`).
-- **Field map**: the premise is that you stand at the base on Mars. The palm map is the Mars map zoomed to 20 m around you, 1 : 1 with the room; wherever the headset has scanned the room, the map is rewritten with the structure that is really there, and everywhere else it is still the Mars data. Say **"Mark target"** where you stand, walk away, and the way back is drawn as arrows on the floor and as a line on the map. The scanned structure is also outlined in red on the real floor. The scan is the room geometry the Quest 3 keeps (run Space Setup once); it is not live depth. Adding `?depth=1` to the address lays the headset's live depth on top: a chair put down after the room scan shows up within a few seconds when it stands about 1 to 2.3 m from you, and goes away again when it is removed; whatever was in the room scan stays (not yet checked on the headset). `?mock=1` and `?mock=hazard` put a fake chair in place of the scan, so the real room is not outlined and `?depth=1` does nothing: on the headset without a Jetson use `?mock=link`.
+## Team
 
-In both, turning the back of the left hand up shows the voice commands as a menu. Point with the right index finger and pinch to pick one.
+Six people, one part each. The letters are used in the documents and in branch names.
 
-**Device check page** — open `https://<PC address>:5173/check.html` in the headset browser. Press **Start AR check** (`AR 점검 시작`), look around the room for 10 seconds and raise both hands: a table shows the granted session features and whether hands, depth, mesh and planes were received. The microphone is checked separately with the **Microphone check** (`마이크 점검`) button.
+| Slot | Owner | Role | One-line description |
+|---|---|---|---|
+| A | 이효제 | Real-time environment analysis | The map of nearby obstacles from the headset depth sensor |
+| B | 차유근 | XR core · integration lead | The skeleton; merged everyone's code into one |
+| C | 김건민 | NASA data layers · mission scenario | NASA data, processed into map layers |
+| D | 안현상 | Map · route guidance | The palm map, the route and the arrows |
+| E | 김도훈 | Jetson hub · voice · sensor | The voice assistant and the temperature sensor on the Jetson |
+| F | 길윤석 | HUD UI · demo | The status readings, the emergency screen, the demo video |
 
-**Build and test**
+## Use of AI
 
-```bash
-npm run build      # static files in web/dist/ (served by the Jetson)
-npm run smoke      # with the dev server running, checks the mock-mode event flow (needs Playwright)
-```
+AI tools were used throughout, as tools to carry out and check the work.
 
-Module owners start from `index.js` in their own folder (`web/src/scan/`, `map/`, `nav/`, `hud/`). What `init(ctx)` and `update(frame)` receive is described in the comment at the top of each file.
+- **Code and documents were written with AI assistance.** We used an AI coding assistant to write and debug the code (data pipeline and its checks, web app, hub), to download, process and check the NASA data, to search for and read source material, to build the HUD design mockup (`mockups/`), and to draft and translate the documents, this README included. Team members directed the work, reviewed the results and decided what to keep.
+- **No data value was produced by AI.** Every NASA value shown comes from the sources listed in [docs/DATA.md](docs/DATA.md).
+- **No AI-generated images or video.** The figures are plots of NASA data drawn by our script; a line under each says the script was written with AI assistance.
+- **Speech models inside the project:** Silero VAD, SenseVoice and Supertonic 3. Every sentence the hub speaks is synthesized audio.
+
+The full statement is in [docs/SUBMISSION.md](docs/SUBMISSION.md), "Use of Super Intelligence".
+
+## Documentation
+
+| Document | Contents |
+|---|---|
+| [docs/SUBMISSION.md](docs/SUBMISSION.md) | The submission text by form field, the submission rules, references and licenses |
+| [docs/USAGE.md](docs/USAGE.md) | How the app behaves in the hand: maps, menus, vitals, readings, alerts, address switches |
+| [docs/DATA.md](docs/DATA.md) | What each data file is, how it was made, how accurate it is, credits |
+| [docs/RESOURCES.md](docs/RESOURCES.md) | The challenge's resources and the other NASA sources: what is there and what we used |
+| [docs/INTERFACES.md](docs/INTERFACES.md) | The formats the parts exchange: data files, events, WebSocket, serial, voice commands |
+| [docs/CHALLENGE.md](docs/CHALLENGE.md) | The challenge text, and which part of the entry answers which sentence |
+| [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Build and tests, working rules, rules for new code, the refactoring of 2026-11-15 |
+| [jetson/README.md](jetson/README.md) | The hub: setup, voice, monitor, recording, one click start |
+| [jetson/QUEST_CONNECT.md](jetson/QUEST_CONNECT.md) | Connecting the Jetson and the Quest 3 |
+| [arduino/README.md](arduino/README.md) | Wiring and flashing the temperature sensor |
+| [data-pipeline/README.md](data-pipeline/README.md) | Rebuilding and checking the data files |
+| [web/src/nav/README.md](web/src/nav/README.md) | The route planner's model and measurements |

@@ -1,5 +1,5 @@
-// 진입점. 코어를 만들고, 모듈을 init한 뒤, 데이터와 젯슨 연결을 시작한다.
-// 순서가 중요하다: 모든 모듈이 init에서 bus.on을 건 다음에 첫 이벤트가 나간다.
+// Entry point. Builds the core, inits the modules, then starts the data and the Jetson link.
+// Order matters: the first event goes out only after every module has set its bus.on in init.
 
 import { bus } from './core/bus.js';
 import { config, mock } from './core/config.js';
@@ -8,8 +8,10 @@ import { loadData, assetUrl } from './core/loader.js';
 import { initLink } from './core/link.js';
 import { initDebug } from './core/debug.js';
 import { initRadiation } from './core/radiation.js';
-import { mode, setMode } from './core/mode.js';
+import { setMode } from './core/mode.js';
+import { params } from './core/params.js';
 import { diagFrame } from './core/diag.js';
+import { initMirror } from './core/mirror.js';
 import { MOCK_KEYS_HELP } from './mock/jetson.js';
 
 import * as scan from './scan/index.js';
@@ -32,7 +34,7 @@ async function main() {
   });
   // Two ways in: the Mars map (the main button) or the field map (scan the room, mark a target).
   // ?mode=field starts the PC view in field mode.
-  if (new URLSearchParams(location.search).get('mode') === 'field') setMode('field');
+  if (params.get('mode') === 'field') setMode('field');
   const marsButton = document.getElementById('xr-button');
   const fieldButton = document.getElementById('xr-field-button');
   marsButton.addEventListener('click', () => { if (!core.xr.session) setMode('mars'); }, { capture: true });
@@ -53,6 +55,8 @@ async function main() {
   core.xr.onSessionEnd(syncFieldButton);
   new MutationObserver(syncFieldButton).observe(marsButton, { attributes: true, childList: true });
   core.addModule('diag', { update: (frame) => diagFrame(frame, core.camera) });
+  // For tests and for looking around from the console (window.__marswalk is made by initDebug).
+  if (window.__marswalk) Object.assign(window.__marswalk, { scene: core.scene, camera: core.camera, controls: core.controls });
 
   const ctx = {
     bus,
@@ -70,10 +74,13 @@ async function main() {
       await mod.init?.(ctx);
       core.addModule(name, mod);
     } catch (err) {
-      // 한 모듈이 깨져도 나머지는 뜬다.
-      console.error(`[main] ${name}.init 실패. 이 모듈 없이 계속합니다.`, err);
+      // If one module breaks, the rest still start.
+      console.error(`[main] ${name}.init failed. Carrying on without this module.`, err);
     }
   }
+
+  // Last, so the picture it sends is of this frame: every module has placed its things by then.
+  core.addModule('mirror', initMirror(core));
 
   initRadiation();
   core.run();
@@ -81,7 +88,7 @@ async function main() {
   try {
     await loadData();
   } catch (err) {
-    console.error('[main] 데이터 로드 실패:', err.message, '— 실데이터가 아직 없으면 주소에 ?mock=1 을 붙이세요.');
+    console.error('[main] could not load the data:', err.message, '— if the real data is not there yet, add ?mock=1 to the address.');
   }
 }
 

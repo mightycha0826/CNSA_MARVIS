@@ -1,5 +1,5 @@
-// HUD 색과 글꼴. 포인트 디자인 시스템(design-system/point)의 다크 테마를 그대로 쓴다.
-// 배경이 실제 방이라 테마는 다크로 고정한다 (mockups/hud-mockup.html).
+// HUD colours and fonts. The dark theme of the Point design system (design-system/point), used as it is.
+// The background is the real room, so the theme stays dark (mockups/hud-mockup.html).
 
 import { HUD } from './config.js';
 import tokens from '../../../design-system/point/tokens.json';
@@ -55,7 +55,7 @@ export const O = {
 // has no internet on the Jetson hotspot. Wanted Sans covers Korean labels (?lang=ko).
 export const FONT_FAMILY = '"Atkinson Hyperlegible", "Wanted Sans", "Apple SD Gothic Neo", system-ui, sans-serif';
 
-/** 원티드 산스를 불러온다. 실패해도 시스템 글꼴로 그린다. */
+/** Loads Wanted Sans. If that fails, the HUD is still drawn, in the system font. */
 export async function loadFont() {
   try {
     const faces = [
@@ -66,12 +66,12 @@ export async function loadFont() {
     for (const face of await Promise.all(faces.map((f) => f.load()))) document.fonts.add(face);
     return true;
   } catch (err) {
-    console.warn('[hud] 글꼴을 불러오지 못해 시스템 글꼴을 씁니다:', err.message);
+    console.warn('[hud] could not load the fonts, using the system font:', err.message);
     return false;
   }
 }
 
-// 레이어별 범례 색띠 (목업과 같은 값). 모르는 레이어는 회색조.
+// The legend's colour ramp for each layer (the mockup's values). An unknown layer gets greyscale.
 export const RAMPS = {
   topo: [[18, 42, 74], [32, 120, 128], [196, 170, 110], [250, 246, 232]],
   slope: [[236, 236, 244], [150, 130, 200], [60, 20, 110]],
