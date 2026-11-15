@@ -18,7 +18,7 @@
 //     what the headset has scanned (`hazard:update` from scan/): clear floor and structure.
 //     Ground the headset knows nothing about is left empty, with no frame around the map.
 //     (It used to show the Mars image there, which read as floor that had been seen.)
-//     The scan arrives at most four times a second, and with live depth (on by default in this mode,
+//     The scan arrives up to ten times a second, and with live depth (on by default in this mode,
 //     core/xr.js) it includes what was put down or taken away a moment ago: the map follows.
 //     The scanned ground still rises and falls with the Mars terrain under the wearer.
 //   - It is the same kind of object as the Mars map (core/hologram.js): a relief floating over
@@ -34,12 +34,16 @@
 //     marked last. The route passes every waypoint that lies nearly on the way (planner.js).
 //   - Waypoints are places that were marked (hud/: "Mark waypoint" where the wearer stands, or
 //     a place picked on the map), each with a name. They are blue, on the map and in the room.
+//   - Walking into ground the scan has marked (structure, something on the floor, a drop) raises
+//     the warning 'hazard-zone', shown by the HUD like any other alert, until the wearer is out
+//     of it again (zone.js). The scan keeps the ground marked: standing on it does not clear it.
 //
 // Receives: layers:ready, hazard:update, voice:command, app:mode, map:pick,
 //           field:target { point: [x, z] room metres | null, label? } (hud: the target is set or deleted)
 //           waypoint:set { id, label, room: [x, z] | cell: [col, row] }, waypoint:remove { id }
 // Sends:    nav:position { point: [x, 0, z] in map metres, source: 'headset' }
 //           nav:route (field mode only; targetId 'mark', points in room coordinates), voice:say
+//           alert:raise { id: 'hazard-zone', level: 'warn' }, alert:clear { id: 'hazard-zone' } (field mode only)
 
 import * as THREE from 'three';
 import { mode } from '../core/mode.js';
@@ -52,6 +56,7 @@ import { sampleHeight } from '../map/terrain.js';
 import { createGridFrame, cellToWorld, worldToCell } from '../nav/coordinates.js';
 import { planVia, PLAN } from './planner.js';
 import { createGuide, makeRibbon, GUIDE } from './guide.js';
+import { ZONE, createZoneWatch } from './zone.js';
 import { MARK, makeYou, makeTarget, makeWaypoint, makePin, setLabel, place } from '../core/markers.js';
 
 export const WALK = {
@@ -85,10 +90,11 @@ export const FIELD = {
   segments: 128, // the map surface is a grid of this many quads per side, raised into a relief
   structureM: 1.0, // scanned structure stands this tall on the map, in room metres (the scan has no heights)
   reliefMaxM: 3, // the Mars terrain under the wearer rises and falls at most this much on the map (room metres)
-  redrawMs: 120, // the palm map is drawn again at most this often (it was 200; the scan now sends up to four times a second)
+  redrawMs: 120, // the palm map is drawn again at most this often (it was 200; the scan sends up to ten times a second)
   showRouteBeyondM: 1.0, // the route appears once the wearer is this far from the target
   arrivedM: 0.5,
   replanMs: 300, // the route is planned again at most this often (it was 500)
+  regridMs: 200, // and at most this often because the scan changed (the scan can send ten times a second; a plan is not that cheap)
 };
 
 let ctx;
@@ -108,6 +114,8 @@ let frameT = null; // D's map metre frame
 let anchorMap = null; // map metres where the session started
 let grid = null; // latest hazard:update
 let gridCanvas = null; // the scan drawn at grid resolution
+let gridDrawn = null; // the hazard:update that gridCanvas shows
+let gridChanged = false; // the scan changed since the route was last planned
 let tileCanvas = null; // one tile of the ground beyond the window, while it is drawn
 const head = new THREE.Vector3();
 let heading = 0; // radians, 0 = facing -z (north on the map), clockwise positive
@@ -299,8 +307,11 @@ function makePalmMap() {
 const STRUCTURE = [255, 169, 77, 215];
 const CLEAR = [60, 70, 86, 115];
 
+// Only when the map is about to be drawn, and only for a grid it has not drawn yet: the scan
+// can send ten times a second, and the map may not be up at all.
 function drawGridCanvas() {
-  if (!grid) return;
+  if (!grid || grid === gridDrawn) return;
+  gridDrawn = grid;
   gridCanvas ??= document.createElement('canvas');
   gridCanvas.width = grid.cols;
   gridCanvas.height = grid.rows;
@@ -325,6 +336,7 @@ function drawPalmMap() {
   g.clearRect(0, 0, W, W);
 
   // What the headset scanned: clear floor and structure.
+  drawGridCanvas();
   if (grid && gridCanvas) {
     const [gx, gz] = toPx(grid.originXZ[0], grid.originXZ[1]);
     g.imageSmoothingEnabled = false;
@@ -616,8 +628,9 @@ function guide(now) {
     return;
   }
   if (dist < FIELD.showRouteBeyondM && lastStatus !== 'ok') return;
-  if (now - lastPlan >= FIELD.replanMs) {
+  if (now - lastPlan >= (gridChanged ? FIELD.regridMs : FIELD.replanMs)) {
     lastPlan = now;
+    gridChanged = false;
     // Through the waypoints that lie nearly on the way (planner.js: planVia), except those the
     // wearer has already been at on this way to the target: the route does not lead back to them.
     const stops = [];
@@ -642,6 +655,33 @@ function guide(now) {
     publishRoute('ok', now);
   }
   fx.lay(route.points);
+}
+
+// ---------- hazard zone ----------
+// The wearer has walked into ground the scan marks. The scan keeps it marked (scan/index.js);
+// the wearer is told, the way the HUD tells of anything else: an alert of level warn (the frame
+// flashes orange, the card names it, "Confirm" stops the flashing) that stays up until they are
+// out of it. Not critical: that would turn the guidance to the way back to base.
+const zone = createZoneWatch();
+let zoneSaid = -Infinity; // when it was last spoken
+
+function watchZone(now) {
+  const on = ZONE.on && mode.current === 'field' && haveHead && !!grid;
+  // Not in field mode, not tracked, or no scan to go by: a warning that is up comes down.
+  const change = on ? zone.step(grid, head.x, head.z, now) : zone.reset() ? 'leave' : null;
+  if (change === 'enter') {
+    ctx.bus.emit('alert:raise', { id: 'hazard-zone', level: 'warn', message: 'Hazard zone', ts: Date.now() });
+    if (now - zoneSaid >= ZONE.speakGapMs) {
+      zoneSaid = now;
+      say('Caution. You are in a hazard zone.');
+    }
+  } else if (change === 'leave') ctx.bus.emit('alert:clear', { id: 'hazard-zone' });
+}
+
+/** The scan starts over in new room coordinates: the grid in hand is of the old ones. */
+function dropGrid() {
+  grid = null;
+  if (zone.reset()) ctx.bus.emit('alert:clear', { id: 'hazard-zone' });
 }
 
 // ---------- Mars mode: the planned route on the real floor ----------
@@ -799,9 +839,8 @@ export function init(context) {
     if (haveHead) startTracking();
   });
   ctx.bus.on('hazard:update', (h) => {
-    grid = h;
-    drawGridCanvas();
-    lastPlan = 0; // the structure changed: plan again
+    grid = h; // drawn when the map is next drawn (drawGridCanvas)
+    gridChanged = true; // the structure changed: plan again, soon (FIELD.regridMs)
   });
   ctx.bus.on('voice:command', onVoice);
   ctx.bus.on('nav:route', onMarsRoute);
@@ -838,11 +877,13 @@ export function init(context) {
   // where the wearer started and what was targeted are in the old ones.
   ctx.xr.onRealign?.(() => {
     haveHead = false;
+    dropGrid();
     clearTarget();
     marsRoute = null;
   });
   ctx.xr.onSessionStart(() => {
     haveHead = false; // the room frame starts over with the session
+    dropGrid();
     floatState.shownSince = null;
     palmMap.root.visible = false;
     clearTarget();
@@ -862,7 +903,7 @@ export function init(context) {
     unfold(on) {
       unfoldTest = on;
     },
-    state: () => ({ viewAt, unfolded, known, via: route.via ?? [], spanM: span, mode: mode.current, head: [head.x, head.z], target: target && [target.x, target.z], targetLabel, waypoints: [...waypoints.values()], waypointsInRoom: fx.waypointsShown, guiding, status: lastStatus, route: route.points.length, distanceM: route.distanceM, arrows: fx.arrows, targetShown: fx.targetShown, marsScale, marsRoute: marsRoute && { targetId: marsRoute.targetId, distanceM: marsRoute.distanceM, points: marsRoute.points.length } }),
+    state: () => ({ viewAt, unfolded, known, via: route.via ?? [], spanM: span, mode: mode.current, head: [head.x, head.z], inHazard: zone.inside, target: target && [target.x, target.z], targetLabel, waypoints: [...waypoints.values()], waypointsInRoom: fx.waypointsShown, guiding, status: lastStatus, route: route.points.length, distanceM: route.distanceM, arrows: fx.arrows, targetShown: fx.targetShown, marsScale, marsRoute: marsRoute && { targetId: marsRoute.targetId, distanceM: marsRoute.distanceM, points: marsRoute.points.length } }),
     /** The map as drawn: caption text, how many surface vertices stand on structure, the tallest point (m on the map). */
     map: () => {
       const y = palmMap.surface.geometry.attributes.position;
@@ -887,6 +928,7 @@ export function update(frame) {
   }
   if (!tracked) haveHead = haveHead && !!simulated;
   if (haveHead) emitPosition(now);
+  watchZone(now);
 
   fx.tick(now);
   showWaypointsInRoom(now);

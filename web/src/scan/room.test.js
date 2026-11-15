@@ -202,24 +202,6 @@ test('a plane follows the same rules: tried again when its space cannot be locat
   assert.equal(room.pending, 1, 'its space moved');
 });
 
-test('where the wearer has stood is clear floor, and stays so when the room is rasterised again', () => {
-  const room = newRoom();
-  // A wall standing in the mesh's frame (+z up there), 2 m long and 1.5 m high.
-  const wall = mesh([0, 0, 0, 2, 0, 0, 2, 0, 1.5, 0, 0, 1.5], [0, 1, 2, 0, 2, 3]);
-  scan(room, frame([wall]));
-  assert.equal(cellAt(room, [1, 0, 0.5]), OBSTACLE);
-  const at = new THREE.Vector3(1, 0, 0.5).applyMatrix4(POSE);
-  assert.equal(room.stoodAt(at.x, at.z, 0.25), true);
-  assert.equal(cellAt(room, [1, 0, 0.5]), PASSABLE, 'the cell under the wearer');
-  assert.equal(cellAt(room, [0.2, 0, 0.5]), OBSTACLE, 'the wall away from the wearer stands');
-  assert.equal(room.stoodAt(at.x, at.z, 0.25), false, 'nothing changes the second time');
-  // The window moves (here: by nothing) and everything is rasterised again.
-  room.moved(ORIGIN);
-  scan(room, frame([wall]), SCAN.rescanMs + 1);
-  assert.equal(cellAt(room, [1, 0, 0.5]), PASSABLE, 'not blocked again');
-  assert.equal(cellAt(room, [0.2, 0, 0.5]), OBSTACLE);
-});
-
 test('after the window has moved, cell [0, 0] is at the new origin', () => {
   const room = newRoom();
   const wall = mesh([0, 0, 0, 2, 0, 0, 2, 0, 1.5, 0, 0, 1.5], [0, 1, 2, 0, 2, 3]);

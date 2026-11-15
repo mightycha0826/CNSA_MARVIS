@@ -4,9 +4,10 @@
 //   - uncaught errors, unhandled promise rejections, console.error
 //   - AR session start / end, visibility changes, reference space resets
 //   - a heartbeat every 5 s while in AR: head position, tracked hands, session visibility,
-//     the frame rate over those 5 s with the longest gap between two frames, and what the
-//     obstacle scan last reported (reads so far, cells found, the depth image's size): how
-//     the app runs on the headset can then be read from the hub's logs/headset.log
+//     the frame rate over those 5 s with the longest gap between two frames, how many
+//     obstacle maps went out in them (scanUpdates), and what the obstacle scan last reported
+//     (reads so far, cells found, the depth image's size, what a read and an update took):
+//     how the app runs on the headset can then be read from the hub's logs/headset.log
 
 import * as THREE from 'three';
 import { bus } from './bus.js';
@@ -56,7 +57,8 @@ export function initDiag(sendJson, xr) {
   xr.onSessionEnd(() => log('xr', { event: 'end' }));
   bus.on('app:mode', ({ mode }) => log('mode', { mode }));
   bus.on('hazard:update', ({ stats, source }) => {
-    scan = stats ? { source, reads: stats.reads, skips: stats.skips, obstacles: stats.obstacles, floor: stats.floor, depth: stats.depth, meshes: stats.meshes, planes: stats.planes, depthPx: stats.depthPx } : null;
+    updates++;
+    scan = stats ? { source, reads: stats.reads, skips: stats.skips, obstacles: stats.obstacles, floor: stats.floor, depth: stats.depth, meshes: stats.meshes, planes: stats.planes, depthPx: stats.depthPx, reachM: stats.reachM, readMs: stats.readMs, sendMs: stats.sendMs } : null;
   });
 }
 
@@ -70,11 +72,12 @@ let lastFrame = 0; // time of the frame before this one, while in AR
 let frames = 0; // frames since the last heartbeat
 let slowestMs = 0; // the longest gap between two frames since then
 let scan = null; // what the obstacle scan said with its last hazard:update
+let updates = 0; // hazard:update events since the last heartbeat: how often the map changed
 /** Called every frame by the render loop. */
 export function diagFrame(frame, camera) {
   if (!frame.session) {
     // Not in AR: the time until the next session is neither a slow frame nor part of a frame rate.
-    lastFrame = lastBeat = frames = slowestMs = 0;
+    lastFrame = lastBeat = frames = slowestMs = updates = 0;
     return;
   }
   if (lastFrame) slowestMs = Math.max(slowestMs, frame.time - lastFrame);
@@ -89,5 +92,6 @@ export function diagFrame(frame, camera) {
   let hands = 0;
   for (const src of frame.session.inputSources) if (src.hand) hands++;
   const p = camera.getWorldPosition(headPos);
-  log('beat', { head: [p.x, p.y, p.z].map((v) => Number(v.toFixed(2))), hands, visibility: frame.session.visibilityState, fps, slowestMs: slowest, scan });
+  log('beat', { head: [p.x, p.y, p.z].map((v) => Number(v.toFixed(2))), hands, visibility: frame.session.visibilityState, fps, slowestMs: slowest, scanUpdates: updates, scan });
+  updates = 0;
 }
