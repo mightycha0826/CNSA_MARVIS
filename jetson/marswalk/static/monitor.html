@@ -3,12 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Marswalk monitor</title>
+<title>MARVIS monitor</title>
 <style>
   :root { color-scheme: dark; }
   html, body { height: 100%; margin: 0; }
   body { background: #07080b; color: #d7dde8; font: 14px/1.4 system-ui, sans-serif; display: flex; flex-direction: column; }
-  header { display: flex; gap: 16px; align-items: baseline; padding: 10px 16px; border-bottom: 1px solid #1c212b; flex-wrap: wrap; }
+  header { display: flex; gap: 6px 16px; align-items: baseline; padding: 10px 16px; border-bottom: 1px solid #1c212b; flex-wrap: wrap; }
   h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: 0.02em; }
   #state { font-variant-numeric: tabular-nums; }
   .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #6b7280; margin-right: 6px; }
@@ -20,31 +20,46 @@
   #wait b { color: #d7dde8; }
   #rescue { background: #b91c1c; color: #fff; padding: 10px 16px; font-weight: 600; letter-spacing: 0.01em; }
   #rescue[hidden] { display: none; }
-  #tune { margin-left: auto; display: flex; gap: 6px; align-items: center; color: #9aa4b5; font-size: 12px; font-variant-numeric: tabular-nums; }
-  #tune[hidden] { display: none; }
-  #tune button { background: #161a22; color: #d7dde8; border: 1px solid #2a303c; border-radius: 6px; min-width: 28px; height: 26px; font: inherit; cursor: pointer; }
-  #tune button:hover { background: #1f2531; }
+  #controls { margin-left: auto; display: flex; gap: 6px 18px; align-items: center; flex-wrap: wrap; color: #9aa4b5; font-size: 12px; font-variant-numeric: tabular-nums; }
+  #controls > span { display: flex; gap: 6px; align-items: center; }
+  #controls > span[hidden] { display: none; }
+  #controls button { background: #161a22; color: #d7dde8; border: 1px solid #2a303c; border-radius: 6px; min-width: 28px; height: 26px; padding: 0 8px; font: inherit; cursor: pointer; }
+  #controls button:hover { background: #1f2531; }
+  #controls button[aria-pressed="true"] { background: #24304a; border-color: #4a6491; color: #fff; }
+  #controls > #views { gap: 0; }
+  #views button:first-child { border-radius: 6px 0 0 6px; }
+  #views button:last-child { border-radius: 0 6px 6px 0; margin-left: -1px; }
   #tune b { color: #d7dde8; font-weight: 600; min-width: 3.2em; text-align: center; display: inline-block; }
+  #stats { flex-basis: 100%; color: #7c8798; font-size: 12px; font-variant-numeric: tabular-nums; }
+  #stats[hidden] { display: none; }
+  body.full header, body.full footer { display: none; }
   footer { padding: 8px 16px; color: #7c8798; border-top: 1px solid #1c212b; font-size: 12px; }
 </style>
 </head>
 <body>
 <header>
-  <h1>Marswalk monitor</h1>
+  <h1>MARVIS monitor</h1>
   <span id="state"><span class="dot"></span><span id="text">Connecting to the hub</span></span>
-  <span id="tune" hidden title="Line the grid up with the real floor: the virtual things are drawn over the camera picture with these values">
-    Camera lens
-    <button data-k="fovDeg" data-d="-1" aria-label="Narrower field of view">−</button><b id="fov"></b><button data-k="fovDeg" data-d="1" aria-label="Wider field of view">+</button>
-    tilt
-    <button data-k="tiltDeg" data-d="-1" aria-label="Tilt up">−</button><b id="tilt"></b><button data-k="tiltDeg" data-d="1" aria-label="Tilt down">+</button>
+  <span id="controls">
+    <span id="views" title="Whole view: all the wearer sees. Camera: the camera picture fills the frame">
+      <button data-view="full" aria-pressed="false">Whole view</button><button data-view="camera" aria-pressed="false">Camera</button>
+    </span>
+    <span id="tune" hidden title="Line the grid up with the real floor: the virtual things are drawn over the camera picture with these values">
+      Camera lens
+      <button data-k="fovDeg" data-d="-1" aria-label="Narrower field of view">−</button><b id="fov"></b><button data-k="fovDeg" data-d="1" aria-label="Wider field of view">+</button>
+      tilt
+      <button data-k="tiltDeg" data-d="-1" aria-label="Tilt up">−</button><b id="tilt"></b><button data-k="tiltDeg" data-d="1" aria-label="Tilt down">+</button>
+    </span>
+    <button id="full" title="The picture alone. F does the same; F or Esc comes back">Fullscreen</button>
   </span>
+  <div id="stats" hidden></div>
 </header>
 <div id="rescue" hidden></div>
 <main>
   <img id="view" alt="What the headset app is drawing">
   <div id="wait" hidden></div>
 </main>
-<footer>Shows what the app draws, from the wearer's head: HUD, map, menus, pointer, arrows, obstacle outline, plus a 1 m floor grid and dots on the hand joints. The room is behind it when the headset's browser gave the app a camera. If the grid does not lie flat on the real floor, set the camera lens at the top right: field of view until the 1 m squares fit the floor near and far, tilt until the grid sits on the floor. The hub keeps the values.</footer>
+<footer>Shows what the app draws, from the wearer's head: HUD, map, menus, pointer, arrows, obstacle outline, plus a 1 m floor grid and dots on the hand joints. The room is behind it when the headset's browser gave the app a camera. If the grid does not lie flat on the real floor, set the camera lens at the top right: field of view until the 1 m squares fit the floor near and far, tilt until the grid sits on the floor. Whole view shows all the wearer sees, Camera fills the frame with the camera picture. The hub keeps what was set. F shows the picture alone.</footer>
 <script>
   const view = document.getElementById('view');
   const text = document.getElementById('text');
@@ -64,6 +79,7 @@
     document.getElementById('tilt').textContent = `${l.tiltDeg > 0 ? '+' : ''}${l.tiltDeg}°`;
   }
   let tunedAt = 0;
+  const postTune = async (body) => (await fetch('/monitor/tune', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).json();
   tune.addEventListener('click', async (ev) => {
     const b = ev.target.closest('button');
     if (!b || !lens) return;
@@ -71,9 +87,59 @@
     showLens(next);
     tunedAt = Date.now();
     try {
-      const r = await (await fetch('/monitor/tune', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(next) })).json();
+      const r = await postTune({ fovDeg: next.fovDeg, tiltDeg: next.tiltDeg });
       if (r.tune) showLens({ ...next, ...r.tune });
     } catch { /* the next poll shows what the app really uses */ }
+  });
+  // What the picture shows: all the wearer sees, or the camera picture filling the frame.
+  // The button that is lit is what the app says it draws; before it says so, what the hub will tell it.
+  const views = document.getElementById('views');
+  function showView(v) {
+    for (const b of views.querySelectorAll('button')) b.setAttribute('aria-pressed', String(b.dataset.view === v));
+  }
+  views.addEventListener('click', async (ev) => {
+    const b = ev.target.closest('button');
+    if (!b) return;
+    showView(b.dataset.view);
+    tunedAt = Date.now();
+    try {
+      await postTune({ view: b.dataset.view });
+    } catch { /* the next poll shows what the app really uses */ }
+  });
+  // The app's own numbers about its pictures: what one costs and how late it is here.
+  const statsLine = document.getElementById('stats');
+  function showStats(st) {
+    const num = (v) => typeof v === 'number' && Number.isFinite(v);
+    const parts = [];
+    if (st) {
+      if (num(st.quality)) parts.push(`quality ${Math.round(st.quality <= 1 ? st.quality * 100 : st.quality)} %`);
+      if (num(st.kB)) parts.push(`${st.kB.toFixed(st.kB < 10 ? 1 : 0)} kB a picture`);
+      if (num(st.kB) && num(st.fps)) parts.push(`${((st.kB * st.fps * 8) / 1000).toFixed(1)} Mbit/s`);
+      if (num(st.delayMs)) parts.push(`delay ${Math.round(st.delayMs)} ms`);
+      if (num(st.fps)) parts.push(`${st.fps.toFixed(1)} pictures/s sent`);
+    }
+    statsLine.hidden = !parts.length;
+    statsLine.textContent = parts.join(' · ');
+  }
+  // Fullscreen: the picture alone. The browser's own fullscreen where it allows it; the header
+  // and the footer go away in any case. Esc leaves the browser's fullscreen by itself, and that
+  // brings them back.
+  function setFull(on) {
+    document.body.classList.toggle('full', on);
+    if (on && !document.fullscreenElement) document.documentElement.requestFullscreen?.().catch(() => {});
+    if (!on && document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+  }
+  document.getElementById('full').addEventListener('click', (ev) => {
+    ev.currentTarget.blur(); // or the space bar would press it again behind the picture
+    setFull(true);
+  });
+  document.addEventListener('keydown', (ev) => {
+    if (ev.ctrlKey || ev.metaKey || ev.altKey || ev.repeat) return;
+    if (ev.key === 'f' || ev.key === 'F') setFull(!document.body.classList.contains('full'));
+    else if (ev.key === 'Escape') setFull(false);
+  });
+  document.addEventListener('fullscreenchange', () => {
+    if (!document.fullscreenElement) setFull(false);
   });
   async function poll() {
     try {
@@ -90,7 +156,13 @@
       const live = s.sources > 0 && s.ageS !== null && s.ageS < 2;
       state.className = live ? 'live' : s.frames ? 'stale' : '';
       const i = s.info || {};
-      if (Date.now() - tunedAt > 2500) showLens(s.sources > 0 && i.lens ? i.lens : null); // not while the buttons are being pressed
+      if (Date.now() - tunedAt > 2500) { // not while the buttons are being pressed
+        showLens(s.sources > 0 && i.lens ? i.lens : null);
+        showView((live && i.view) || s.tune?.view || null); // the app's word counts only while its pictures come
+      }
+      showStats(s.sources > 0 ? s.stats : null);
+      // The picture's shape is the app's to choose: 4:3 until it says otherwise.
+      if (i.width > 0 && i.height > 0) view.style.aspectRatio = `${i.width} / ${i.height}`;
       if (live) {
         text.textContent = `Live from ${s.from} · ${i.ar ? 'in AR' : 'PC view'} · ${i.mode === 'field' ? 'field map' : 'Mars map'} · ${i.width}×${i.height} · ${fps.toFixed(1)} pictures/s${i.camera && i.camera !== 'off' ? ' · camera: ' + i.camera : ''}`;
         wait.hidden = true;
@@ -106,6 +178,7 @@
     } catch {
       state.className = '';
       text.textContent = 'The hub does not answer';
+      showStats(null);
     }
   }
   poll();
