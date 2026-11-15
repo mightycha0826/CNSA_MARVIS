@@ -405,7 +405,9 @@ if "--figure" in sys.argv:
     FIG.mkdir(parents=True, exist_ok=True)
 
     def font(size):
-        for name in ("arial.ttf", "DejaVuSans.ttf"):
+        # Liberation Sans has Arial's widths: where there is no Arial (Linux) the captions still
+        # fit. DejaVu Sans is wider, and the note under layers.png ran off the right edge with it.
+        for name in ("arial.ttf", "LiberationSans-Regular.ttf", "DejaVuSans.ttf"):
             try:
                 return ImageFont.truetype(name, size)
             except OSError:
@@ -419,7 +421,7 @@ if "--figure" in sys.argv:
         d.text(xy, text, font=f, fill=fill)
 
     CYAN, YELLOW, GREEN, RED = (0, 229, 255), (255, 214, 0), (60, 255, 90), (255, 70, 70)
-    NOTE = "Marswalk Visor - built from NASA data by the team's pipeline (code written with AI assistance)"
+    NOTE = "MARVIS - built from NASA data by the team's pipeline (code written with AI assistance)"
 
     # 1) The four layers in one image
     P = 720

@@ -49,11 +49,11 @@ Where the numbers come from: every data number in the text was computed from the
 
 ## Project Name
 
-Marswalk Visor
+MARVIS
 
 ## High-Level Project Summary
 
-**Marswalk Visor** is a helmet heads-up display for an astronaut walking on Mars. It layers data from four NASA Mars missions into one map of a single walkable site, plans a route across it that a person in a spacesuit could walk, rewrites the map with what the helmet itself sees nearby, and keeps the crew's safety data in view while their hands stay free.
+**MARVIS** is a helmet heads-up display for an astronaut walking on Mars. It layers data from four NASA Mars missions into one map of a single walkable site, plans a route across it that a person in a spacesuit could walk, rewrites the map with what the helmet itself sees nearby, and keeps the crew's safety data in view while their hands stay free.
 
 Orbital maps of Mars are built for regional views. At the scale of a spacewalk they run out of detail: across our 2 km site the best optical image resolves about 0.64 m per pixel, and the thermal image is only 25 pixels wide. NASA's own experience at our site shows the gap. When the Curiosity rover reached a pale patch of ground in Gediz Vallis channel, it found a field of pure sulfur stones that, as JPL reported, had been "too small for MRO's High-Resolution Imaging Science Experiment (HiRISE) to see."
 
