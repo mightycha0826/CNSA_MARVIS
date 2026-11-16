@@ -7,6 +7,8 @@ Project Marvis is a helmet heads-up display for an astronaut walking on Mars. It
 
 **Demo video:** [docs/demo/marswalk-visor-demo.mp4](docs/demo/marswalk-visor-demo.mp4), a recording of the headset's view with the app in use (29 s).
 
+https://github.com/user-attachments/assets/90745d44-e9c2-4f00-bd6d-34f1c23b71a2
+
 ![The four map layers of the site: optical, terrain shading, slope and night thermal, with Curiosity's path](docs/figures/layers.png)
 
 *The four map layers over the same 2 km × 2 km of Gediz Vallis channel, with the path Curiosity drove. A plot of NASA data drawn by our script.*
